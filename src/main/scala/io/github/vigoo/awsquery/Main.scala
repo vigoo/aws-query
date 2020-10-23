@@ -1,166 +1,90 @@
 package io.github.vigoo.awsquery
 
-import zio._
-import io.github.vigoo.zioaws.core
+import io.github.vigoo.awsquery.report.{Ec2InstanceKey, Ec2InstanceReport, ElbReport, Report, ReportCache, ReportKey, retrieve}
 import io.github.vigoo.zioaws.core.AwsError
-import io.github.vigoo.zioaws.ec2
-import io.github.vigoo.zioaws.ec2.model._
-import io.github.vigoo.zioaws.elasticloadbalancing
-import io.github.vigoo.zioaws.elasticloadbalancing.ElasticLoadBalancing
-import io.github.vigoo.zioaws.elasticloadbalancing.model.primitives.AccessPointName
-import io.github.vigoo.zioaws.elasticloadbalancing.model.{DescribeLoadBalancersRequest, LoadBalancerDescription}
-import io.github.vigoo.zioaws.http4s
+import io.github.vigoo.zioaws.elasticloadbalancing.model.LoadBalancerDescription
+import io.github.vigoo.zioaws.elasticbeanstalk.model.EnvironmentDescription
+import io.github.vigoo.zioaws.{core, ec2, elasticbeanstalk, elasticloadbalancing, http4s}
+import zio._
 import zio.logging._
 import zio.logging.slf4j._
-import zio.query._
-import zio.stream.ZStream
+import zio.query.ZQuery
+
+import scala.util.matching.Regex
 
 object Main extends App {
 
-  case class GetEc2Instance(id: primitives.InstanceId) extends Request[AwsError, Instance.ReadOnly]
+  import sources._
 
-  val ec2InstancesDataSource: DataSource[Logging with ec2.Ec2, GetEc2Instance] = new DataSource.Batched[Logging with ec2.Ec2, GetEc2Instance] {
-    override def run(requests: Chunk[GetEc2Instance]): ZIO[Logging with ec2.Ec2, Nothing, CompletedRequestMap] = {
-      log.info(s"DescribeInstances ${requests.map(_.id).mkString(", ")}") *>
-        ec2.describeInstances(DescribeInstancesRequest(instanceIds = Some(requests.map(_.id))))
-          .mapM(_.instances)
-          .flatMap(instances => ZStream.fromIterable(instances))
-          .foldM(CompletedRequestMap.empty) { (resultMap, item) =>
-            for {
-              instanceId <- item.instanceId
-            } yield resultMap.insert(GetEc2Instance(instanceId))(Right(item))
-          }
-          .catchAll { error =>
-            ZIO.succeed(
-              requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                resultMap.insert(req)(Left(error))
-              }
-            )
-          }
+  type AllServices = ec2.Ec2 with elasticloadbalancing.ElasticLoadBalancing with elasticbeanstalk.ElasticBeanstalk
+
+  val cloudFormationStackRegex: Regex = "^awseb-(.*)-stack$".r
+
+  private def optionally[R, E, A, B](value: Option[A])(f: A => ZQuery[R, E, B]): ZQuery[R, E, Option[B]] =
+    value match {
+      case Some(value) => f(value).map(Some.apply)
+      case None => ZQuery.none
     }
 
-    override val identifier: String = "ec2"
-  }
-
-  def getEc2Instance(id: primitives.InstanceId): ZQuery[Logging with ec2.Ec2, AwsError, Instance.ReadOnly] =
-    ZQuery.fromRequest(GetEc2Instance(id))(ec2InstancesDataSource)
-
-  class ElbQueries(allLoadBalancers: Map[elasticloadbalancing.model.primitives.AccessPointName, LoadBalancerDescription.ReadOnly]) {
-
-    import ElbQueries.GetLoadBalancer
-
-    private val dataSource = new DataSource.Batched[Logging with elasticloadbalancing.ElasticLoadBalancing, GetLoadBalancer] {
-      override def run(requests: Chunk[ElbQueries.GetLoadBalancer]): ZIO[Logging with ElasticLoadBalancing, Nothing, CompletedRequestMap] = {
-        val (prefetched, nonPrefetched) = requests.partition(req => allLoadBalancers.contains(req.name))
-        for {
-          a <- runPrefetched(prefetched)
-          b <- runNonPrefetched(nonPrefetched)
-        } yield a ++ b
-      }
-
-      private def runPrefetched(requests: Chunk[ElbQueries.GetLoadBalancer]): ZIO[Logging with ElasticLoadBalancing, Nothing, CompletedRequestMap] = {
-        ZIO.succeed(requests.foldLeft(CompletedRequestMap.empty) { case (result, req) =>
-          result.insert(GetLoadBalancer(req.name))(Right(allLoadBalancers(req.name)))
-        })
-      }
-
-      private def runNonPrefetched(requests: Chunk[ElbQueries.GetLoadBalancer]): ZIO[Logging with ElasticLoadBalancing, Nothing, CompletedRequestMap] = {
-        log.info(s"DescribeLoadBalancers ${requests.map(_.name).mkString(", ")}") *>
-          elasticloadbalancing.describeLoadBalancers(DescribeLoadBalancersRequest(loadBalancerNames = Some(requests.map(_.name))))
-            .foldM(CompletedRequestMap.empty) { (resultMap, item) =>
-              for {
-                elbName <- item.loadBalancerName
-              } yield resultMap.insert(GetLoadBalancer(elbName))(Right(item))
-            }
-            .catchAll { error =>
-              ZIO.succeed(
-                requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                  resultMap.insert(req)(Left(error))
-                }
-              )
-            }
-      }
-
-      override val identifier: String = "elb"
-    }
-
-    def allPrefetched: ZQuery[Any, AwsError, Seq[LoadBalancerDescription.ReadOnly]] =
-      ZQuery.succeed(allLoadBalancers.values.toSeq)
-
-    def getLoadBalancer(name: AccessPointName): ZQuery[Logging with elasticloadbalancing.ElasticLoadBalancing, AwsError, LoadBalancerDescription.ReadOnly] =
-      ZQuery.fromRequest(GetLoadBalancer(name))(dataSource)
-
-    def loadBalancerOf(instanceId: primitives.InstanceId): ZQuery[Logging, AwsError, Option[LoadBalancerDescription.ReadOnly]] = {
-      ZQuery.fromEffect {
-        ZIO.filter(allLoadBalancers.values.toList) { elb =>
-          elb.instances.flatMap { instances =>
-            ZIO.foreach(instances)(_.instanceId)
-              .map(_.contains(instanceId))
-          }
-        }.map(_.headOption)
-      }
-    }
-  }
-
-  def getSiblingsOfInstance(elbQueries: ElbQueries, instance: primitives.InstanceId): ZQuery[Logging with ec2.Ec2, AwsError, Set[Instance.ReadOnly]] =
+  private def cached[R <: ReportCache, E, A, B <: Report, K <: ReportKey](input: A)(keyFn: A => ZIO[Any, E, K])(query: K => ZQuery[R, E, B]): ZQuery[R, E, B] =
     for {
-      elb <- elbQueries.loadBalancerOf(instance)
-      instances <- elb match {
-        case Some(elb) =>
-          for {
-            instanceMembers <- ZQuery.fromEffect(elb.instances)
-            instanceIds <- ZQuery.fromEffect(ZIO.foreach(instanceMembers)(_.instanceId))
-            instances <- ZQuery.foreachPar(instanceIds)(getEc2Instance)
-          } yield instances
+      cachedResultWithKey <- ZQuery.fromEffect {
+        for {
+          key <- keyFn(input)
+          cacheResult <- retrieve[B](key)
+        } yield (cacheResult, key)
+      }
+      (cachedResult, key) = cachedResultWithKey
+      result <- cachedResult match {
+        case Some(cachedResult) => ZQuery.succeed(cachedResult)
         case None =>
-          ZQuery.fail(AwsError.fromThrowable(new RuntimeException(s"Could not find ELB for instance $instance")))
+          for {
+            result <- query(key)
+            _ <- ZQuery.fromEffect(report.store(key, result))
+          } yield result
       }
-    } yield instances.toSet
+    } yield result
 
-  object ElbQueries {
+  private def envBasedQuery(env: EnvironmentDescription.ReadOnly): ZQuery[Logging with AllServices, AwsError, Unit] =
+    ???
 
-    case class GetLoadBalancer(name: AccessPointName) extends Request[AwsError, LoadBalancerDescription.ReadOnly]
-
-    def apply(): ZIO[Logging with elasticloadbalancing.ElasticLoadBalancing, AwsError, ElbQueries] =
+  private def elbBasedQuery(elb: LoadBalancerDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, ElbReport] = {
+    cached(elb)(_.loadBalancerName) { name =>
       for {
-        _ <- log.info(s"Getting all ELBs")
-        elbs <- elasticloadbalancing.describeLoadBalancers(DescribeLoadBalancersRequest()).runCollect
-        allLoadBalancers <- ZIO.foreach(elbs) { elb =>
-          elb.loadBalancerName.map { name => (name -> elb) }
-        }
-        _ <- log.info(s"Got ${allLoadBalancers.size} ELBs")
-      } yield new ElbQueries(allLoadBalancers.toMap)
-  }
+        tags <- elbquery.getLoadBalancerTags(name)
+        cfStackNameTag = tags.find(_.keyValue == "aws:cloudformation:stack-name")
+        ebName <- optionally(cfStackNameTag) { tag =>
+          ZQuery.fromEffect(tag.value).map(tagValue => cloudFormationStackRegex.findFirstMatchIn(tagValue).map(_.group(1)))
+        }.map(_.flatten)
+        env <- optionally(ebName) { name =>
+          (ebquery.getEnvironmentById(name) <&> ebquery.getEnvironmentByName(name)).map { case (a, b) => a.orElse(b) }
+        }.map(_.flatten)
+        envResults <- optionally(env)(envBasedQuery)
+      } yield ElbReport()
+    }
 
-  private def runQuery(instanceId: String): ZIO[Logging with ec2.Ec2 with elasticloadbalancing.ElasticLoadBalancing, AwsError, Unit] =
+  private def ec2InstanceQuery(instanceId: ec2.model.primitives.InstanceId): ZQuery[Logging with ReportCache with AllServices, AwsError, Ec2InstanceReport] =
+    cached(instanceId)((id: ec2.model.primitives.InstanceId) => ZIO.succeed(Ec2InstanceKey(id))) { _ =>
+      for {
+        instance <- ec2query.getEc2Instance(instanceId)
+        imageId <- ZQuery.fromEffect(instance.imageId)
+        imgElb <- (ec2query.getImage(imageId) <&> elbquery.loadBalancerOf(instanceId))
+        (image, elb) = imgElb
+        elbReport <- optionally(elb)(elbBasedQuery)
+      } yield Ec2InstanceReport()
+    }
+
+  private def runQuery(instanceId: String): ZIO[Logging with ReportCache with AllServices, AwsError, Unit] =
     for {
-      elbQueries <- ElbQueries()
-      elb <- elbQueries.loadBalancerOf(instanceId).run
-      elbName <- elb.map(_.loadBalancerName).getOrElse(ZIO.succeed("???"))
-      instances <- getSiblingsOfInstance(elbQueries, instanceId).run
-      _ <- log.info(s"Instances in $elbName:")
-      _ <- ZIO.foreach(instances) { instance =>
-        for {
-          id <- instance.instanceId
-          startedAt <- instance.launchTime
-          _ <- log.info(s"- $id started at $startedAt")
-        } yield ()
-      }
-      _ <- log.info("And the union of all the siblings of all instances:")
-      all <- ZQuery.foreachPar(instances.toList) { instance =>
-        for {
-          id <- ZQuery.fromEffect(instance.instanceId)
-          siblings <- getSiblingsOfInstance(elbQueries, id)
-        } yield siblings
-      }.map(_.fold(Set.empty)(_ union _)).run
-      _ <- ZIO.foreach(all) { instance =>
-        for {
-          id <- instance.instanceId
-          startedAt <- instance.launchTime
-          _ <- log.info(s"- $id started at $startedAt")
-        } yield ()
-      }
+      result <- ec2InstanceQuery(instanceId).run
     } yield ()
+
+  // TODOs
+  // logging and rate limiting as aspects
+  // unify common code
+  // "execution graph dump" aspect for generating diagrams for the post?
+  // implicit withFilter to make zipPars nicer?
+  // cached report queries should return reportkey, typed reportlink between models to cut cycles
 
   override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
     val logging = Slf4jLogger.make { (context, message) =>
@@ -172,8 +96,9 @@ object Main extends App {
     val layer =
       (http4s.client() >>> core.config.default >>>
         (ec2.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-          elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)))) ++
-        logging
+          elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+          elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
+          )) ++ logging
     for {
       _ <- runQuery(args(1))
         .provideLayer(layer)
