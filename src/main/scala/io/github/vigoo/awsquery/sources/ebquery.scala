@@ -9,11 +9,11 @@ import zio.logging.{Logging, log}
 import zio.query.{CompletedRequestMap, DataSource, Request, ZQuery}
 
 object ebquery {
-  sealed trait EbRequest extends Request[AwsError, Option[EnvironmentDescription.ReadOnly]]
-  case class GetEnvironmentByName(name: primitives.EnvironmentName) extends EbRequest
-  case class GetEnvironmentById(id: primitives.EnvironmentId) extends EbRequest
+  sealed trait EbEnvRequest extends Request[AwsError, Option[EnvironmentDescription.ReadOnly]]
+  case class GetEnvironmentByName(name: primitives.EnvironmentName) extends EbEnvRequest
+  case class GetEnvironmentById(id: primitives.EnvironmentId) extends EbEnvRequest
 
-  val ebEnvDataSource: DataSource[Logging with ElasticBeanstalk, EbRequest] = DataSource.Batched.make("eb-env") { (requests: Chunk[EbRequest]) =>
+  val ebEnvDataSource: DataSource[Logging with ElasticBeanstalk, EbEnvRequest] = DataSource.Batched.make("eb-env") { (requests: Chunk[EbEnvRequest]) =>
     val byName = requests.collect { case GetEnvironmentByName(name) => name }
     val byId = requests.collect { case GetEnvironmentById(id) => id }
 
@@ -71,4 +71,24 @@ object ebquery {
 
   def getEnvironmentByName(name: primitives.EnvironmentName): ZQuery[Logging with ElasticBeanstalk, AwsError, Option[EnvironmentDescription.ReadOnly]] =
     ZQuery.fromRequest(GetEnvironmentByName(name))(ebEnvDataSource)
+
+
+  case class GetEnvironmentResource(id: primitives.EnvironmentId) extends Request[AwsError, EnvironmentResourceDescription.ReadOnly]
+
+  val ebEnvResourcesDataSource: DataSource[Logging with ElasticBeanstalk, GetEnvironmentResource] = DataSource.Batched.make("eb-resource") { (requests: Chunk[GetEnvironmentResource]) =>
+    // no batching possible
+    ZIO.foldLeft(requests)(CompletedRequestMap.empty) { (resultMap, request) =>
+      (for {
+        response <- elasticbeanstalk.describeEnvironmentResources(DescribeEnvironmentResourcesRequest(
+          environmentId = Some(request.id)
+        ))
+        resource <- response.environmentResources
+      } yield resultMap.insert(request)(Right(resource))).catchAll { error =>
+        ZIO.succeed(resultMap.insert(request)(Left(error)))
+      }
+    }
+  }
+
+  def getEnvironmentResource(id: primitives.EnvironmentId): ZQuery[Logging with ElasticBeanstalk, AwsError, EnvironmentResourceDescription.ReadOnly] =
+    ZQuery.fromRequest(GetEnvironmentResource(id))(ebEnvResourcesDataSource)
 }
