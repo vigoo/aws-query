@@ -18,7 +18,7 @@ object asgquery {
 
   val asgDataSource: DataSource[Logging with AutoScaling, AsgRequest[Any]] =
     AllOrPerItem.make(new AllOrPerItem[Logging with AutoScaling, AsgRequest[Any], AutoScalingGroup.ReadOnly] {
-      override val name: String = "asg"
+      override val name: String = "ASG"
 
       override def isGetAll(request: AsgRequest[Any]): PropagateAtLaunch =
         request match {

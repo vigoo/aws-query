@@ -7,11 +7,14 @@ import io.github.vigoo.zioaws.elasticloadbalancing.model.LoadBalancerDescription
 import io.github.vigoo.zioaws.elasticbeanstalk.model.{ApplicationDescription, EnvironmentDescription, EnvironmentResourceDescription}
 import io.github.vigoo.zioaws.elasticbeanstalk.model.primitives.EnvironmentId
 import io.github.vigoo.zioaws.elasticloadbalancing.model.primitives.AccessPointName
-import io.github.vigoo.zioaws.{autoscaling, core, ec2, elasticbeanstalk, elasticloadbalancing, http4s}
+import io.github.vigoo.zioaws.{autoscaling, core, ec2, elasticbeanstalk, elasticloadbalancing, netty}
+import org.apache.logging.log4j.LogManager
 import zio._
+import zio.console.Console
 import zio.logging._
 import zio.logging.slf4j._
-import zio.query.ZQuery
+import zio.query.{DataSource, DataSourceAspect, ZQuery}
+import zio.query.Described._
 
 import scala.util.matching.Regex
 
@@ -29,24 +32,15 @@ object Main extends App {
       case None => ZQuery.none
     }
 
-  private def cached[R <: ReportCache, E, A, B <: Report, K <: ReportKey](input: A)(keyFn: A => ZIO[Any, E, K])(query: K => ZQuery[R, E, B]): ZQuery[R, E, LinkedReport[K, B]] =
+  private def cached[R <: ReportCache with Logging, A, B <: Report, K <: ReportKey](input: A)(keyFn: A => ZIO[Any, AwsError, K])(query: K => ZQuery[R, AwsError, B]): ZQuery[R, AwsError, LinkedReport[K, B]] =
     for {
-      cachedResultWithKey <- ZQuery.fromEffect {
-        for {
-          key <- keyFn(input)
-          cacheResult <- retrieve[B](key)
-        } yield (cacheResult, key)
-      }
-      (cachedResult, key) = cachedResultWithKey
-      result <- cachedResult match {
-        case Some(_) => ZQuery.succeed(LinkedReport[K, B](key))
-        case None =>
-          for {
-            result <- query(key)
-            _ <- ZQuery.fromEffect(report.store(key, result))
-          } yield LinkedReport[K, B](key)
-      }
-    } yield result
+      key <- ZQuery.fromEffect(keyFn(input))
+      env <- ZQuery.environment[R]
+      _ <- storeIfNew(
+        key,
+        query(key).provide(env ? "provided environment")
+      )
+    } yield LinkedReport[K, B](key)
 
   private def getEnvironmentsLoadBalancerReports(resource: EnvironmentResourceDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[LinkedReport[ElbKey, ElbReport]]] =
     for {
@@ -265,9 +259,11 @@ object Main extends App {
       } yield result
     }
 
-  private def runQuery(instanceId: String): ZIO[Logging with ReportCache with AllServices, AwsError, Unit] =
+  private def runQuery(instanceId: String): ZIO[Console with Logging with ReportCache with AllServices, AwsError, Unit] =
     for {
       result <- getInstanceReport(instanceId).run
+      r <- retrieve(result.key)
+      _ <- console.putStrLn(s"Result: $r")
     } yield ()
 
   // TODOs
@@ -278,26 +274,25 @@ object Main extends App {
 
   override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
     val logging = Slf4jLogger.make { (context, message) =>
-      val correlationId = LogAnnotation.CorrelationId.render(
-        context.get(LogAnnotation.CorrelationId)
-      )
-      s"[$correlationId] $message"
+      message
     }
     val finalLayer =
-      (http4s.client() >>> core.config.default >>>
+      (netty.client() >>> core.config.default >>>
         (
           ec2.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-          elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-          elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-          autoscaling.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
-        )
-      ) ++ logging ++ report.live
+            elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+            elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+            autoscaling.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
+          )
+        ) ++ logging ++ report.live ++ Console.any
     for {
       _ <- runQuery(args(1))
         .provideLayer(finalLayer)
         .catchAll { error =>
           console.putStrLnErr(error.toString)
         }
+      _ <- ZIO.effect(LogManager.shutdown()).orDie
+      _ <- console.putStrLn("Finished.")
     } yield ExitCode.success
   }
 }

@@ -1,9 +1,11 @@
 package io.github.vigoo.awsquery
 
+import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.ec2.model.primitives.DateTime
 import io.github.vigoo.zioaws.{autoscaling, ec2, elasticbeanstalk, elasticloadbalancing}
-import zio.stm.TMap
-import zio.{Has, UIO, ZIO, ZLayer}
+import zio.query.ZQuery
+import zio.stm.{TMap, ZSTM}
+import zio.{Has, Promise, UIO, ZIO, ZLayer}
 
 package object report {
   type ReportCache = Has[ReportCache.Service]
@@ -11,33 +13,54 @@ package object report {
   object ReportCache {
 
     trait Service {
-      def store[A <: Report](reportKey: ReportKey, value: A): UIO[Unit]
+      def storeIfNew[A <: Report](reportKey: ReportKey, query: ZQuery[Any, AwsError, A]): ZQuery[Any, AwsError, Boolean]
 
-      def retrieve[A <: Report](key: ReportKey): UIO[Option[A]]
+      def retrieve[A <: Report](key: ReportKey): ZIO[Any, AwsError, Option[A]]
     }
 
   }
 
-  val live: ZLayer[Any, Nothing, ReportCache] = ZLayer.fromEffect {
+  val live: ZLayer[Any, Nothing, ReportCache] = {
     for {
-      cache <- TMap.empty[ReportKey, Report].commit
+      cache <- TMap.empty[ReportKey, Promise[AwsError, Report]].commit
     } yield new ReportCache.Service {
-      override def store[A <: Report](reportKey: ReportKey, value: A): UIO[Unit] =
-        cache.put(reportKey, value).commit
+      override def storeIfNew[A <: Report](reportKey: ReportKey, query: ZQuery[Any, AwsError, A]): ZQuery[Any, AwsError, Boolean] =
+        ZQuery.fromEffect {
+          for {
+            promise <- Promise.make[AwsError, Report]
+            finalQuery <- cache.get(reportKey).flatMap {
+              case Some(report) =>
+                // replacing the query with the cached value
+                ZSTM.succeed(ZQuery.succeed(false))
+              case None =>
+                // replacing the query with the cached value
+                cache.put(reportKey, promise).map { _ =>
+                  query.foldM(
+                    failure => ZQuery.fromEffect(promise.fail(failure)) *> ZQuery.fail(failure),
+                    success => ZQuery.fromEffect(promise.succeed(success))
+                  )
+                }
+            }.commit
+          } yield finalQuery
+        }.flatMap(identity)
 
-      override def retrieve[A <: Report](key: ReportKey): UIO[Option[A]] =
+      override def retrieve[A <: Report](key: ReportKey): ZIO[Any, AwsError, Option[A]] =
         for {
-          report <- cache.get(key).commit
-          reportA <- ZIO.effect(report.map(_.asInstanceOf[A])).orDie
-        } yield reportA
+          reportPromise <- cache.get(key).commit
+          result <- reportPromise match {
+            case None => ZIO.none
+            case Some(promise) => promise.await.map(r => Some(r.asInstanceOf[A]))
+          }
+        } yield result
     }
-  }
+  }.toLayer
 
-  def store[A <: Report](key: ReportKey, value: A): ZIO[ReportCache, Nothing, Unit] = ZIO.accessM(_.get.store(key, value))
+  def storeIfNew[A <: Report](key: ReportKey, query: ZQuery[Any, AwsError, A]): ZQuery[ReportCache, AwsError, Boolean] = ZQuery.accessM(_.get.storeIfNew(key, query))
 
-  def retrieve[A <: Report](key: ReportKey): ZIO[ReportCache, Nothing, Option[A]] = ZIO.accessM(_.get.retrieve(key))
+  def retrieve[A <: Report](key: ReportKey): ZIO[ReportCache, AwsError, Option[A]] = ZIO.accessM(_.get.retrieve(key))
 
   case class LinkedReport[K <: ReportKey, R <: Report](key: K)
+
 
   sealed trait ReportKey
 
@@ -52,6 +75,7 @@ package object report {
   final case class AsgKey(id: autoscaling.model.primitives.ResourceName) extends ReportKey
 
   final case class LaunchConfigKey(name: autoscaling.model.primitives.ResourceName) extends ReportKey
+
 
   sealed trait Report
 
@@ -106,4 +130,5 @@ package object report {
                                       instanceProfileArn: Option[String],
                                       instanceType: String,
                                       securityGroups: List[String]) extends Report
+
 }

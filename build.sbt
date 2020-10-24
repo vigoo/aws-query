@@ -16,7 +16,7 @@ libraryDependencies ++= Seq(
   "io.github.vigoo" %% "zio-aws-elasticbeanstalk" % "2.14.7.0",
   "io.github.vigoo" %% "zio-aws-route53" % "2.14.7.0",
 
-  "io.github.vigoo" %% "zio-aws-http4s" % "2.14.7.0",
+  "io.github.vigoo" %% "zio-aws-netty" % "2.14.7.0",
   "org.apache.logging.log4j" % "log4j-core" % "2.13.3",
   "org.apache.logging.log4j" % "log4j-slf4j-impl" % "2.13.3",
   "com.lmax" % "disruptor" % "3.4.2",

@@ -24,7 +24,7 @@ object elbquery {
   val elbDataSource: DataSource[Logging with ElasticLoadBalancing, ElbRequest[Any]] =
     AllOrPerItem.make(
       new AllOrPerItem[Logging with ElasticLoadBalancing, ElbRequest[Any], LoadBalancerDescription.ReadOnly] {
-        override val name: String = "elb"
+        override val name: String = "ELB"
 
         override def isGetAll(request: ElbRequest[Any]): Boolean =
           request match {

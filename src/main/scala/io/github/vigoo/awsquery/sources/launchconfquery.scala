@@ -18,7 +18,7 @@ object launchconfquery {
 
   val launchConfDataSource: DataSource[Logging with AutoScaling, LaunchConfRequest[Any]] =
     AllOrPerItem.make(new AllOrPerItem[Logging with AutoScaling, LaunchConfRequest[Any], LaunchConfiguration.ReadOnly] {
-      override val name: String = "launchconf"
+      override val name: String = "LaunchConf"
 
       override def isGetAll(request: LaunchConfRequest[Any]): Boolean =
         request match {
