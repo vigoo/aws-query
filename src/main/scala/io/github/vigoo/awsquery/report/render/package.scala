@@ -27,15 +27,15 @@ package object render {
 
     protected def normal(text: String): UIO[Unit] = console.putStr(text)
 
-    protected def sectionHeader(text: String): UIO[Unit] = console.putStr(s"$BLACK$BOLD[$RESET$MAGENTA$text$BLACK$BOLD]$RESET")
+    protected def sectionHeader(text: String): UIO[Unit] = console.putStr(s"[$RESET$MAGENTA$BOLD$text$RESET]")
 
     protected def highlighted(text: String): UIO[Unit] = console.putStr(s"$GREEN$BOLD$text$RESET")
 
-    protected def keyword(text: String): UIO[Unit] = console.putStr(s"$BLUE$BOLD$text$RESET")
+    protected def keyword(text: String): UIO[Unit] = console.putStr(s"$YELLOW$BOLD$text$RESET")
 
-    protected def details(text: String): UIO[Unit] = console.putStr(s"$BLACK$BOLD$text$RESET")
+    protected def details(text: String): UIO[Unit] = console.putStr(s"$CYAN$text$RESET")
 
-    protected def link(text: String): UIO[Unit] = console.putStr(s"$MAGENTA$BOLD$text$RESET")
+    protected def link(text: String): UIO[Unit] = console.putStr(s"$MAGENTA$BOLD$UNDERLINED$text$RESET")
 
     protected implicit class Syntax(op: UIO[Unit]) {
       def <->(next: UIO[Unit]): UIO[Unit] =
@@ -111,9 +111,9 @@ package object render {
           ifDefined(ec2.publicIp) { ip => id *> keyword("Public IP") <:> normal(ip) <-> ifDefined(ec2.publicDns)(details) *> newLine } *>
           ifDefined(ec2.privateIp) { ip => id *> keyword("Private IP") <:> normal(ip) <-> ifDefined(ec2.privateDns)(details) *> newLine } *>
           id *> keyword("Instance type") <:> normal(ec2.instanceType.toString) \\
-          id *> keyword("Security groups") <:> ZIO.foreach_(ec2.securityGroups) { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") } \\
-          id *> keyword("AMI") <:> normal(ec2.amiName) <-> details(ec2.amiId) \\
-          id *> keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(ec2.instanceProfileId) \\
+          id *> keyword("Security groups") <:> ZIO.foreach_(ec2.securityGroups) { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") *> space } \\
+          id *> keyword("AMI") <:> normal(ec2.amiName) <-> details(s"(${ec2.amiId})") \\
+          id *> keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(s"(${ec2.instanceProfileId})") \\
           id *> keyword("SSH key name") <:> normal(ec2.sshKeyName) \\
           id *> keyword("Launched at") <:> normal(ec2.launchedAt.toString) \\
           ifDefined(ec2.elb) { elb => indented { renderElb(elb, Some(s"the instance ${ec2.instanceId} is registered into this ELB ")) } *> newLine }
