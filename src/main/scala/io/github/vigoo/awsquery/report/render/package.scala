@@ -27,15 +27,15 @@ package object render {
 
     protected def normal(text: String): UIO[Unit] = console.putStr(text)
 
-    protected def sectionHeader(text: String): UIO[Unit] = console.putStr(s"$BLACK_B[$MAGENTA$text$BLACK_B]$RESET")
+    protected def sectionHeader(text: String): UIO[Unit] = console.putStr(s"$BLACK$BOLD[$RESET$MAGENTA$text$BLACK$BOLD]$RESET")
 
-    protected def highlighted(text: String): UIO[Unit] = console.putStr(s"$GREEN_B$text$RESET")
+    protected def highlighted(text: String): UIO[Unit] = console.putStr(s"$GREEN$BOLD$text$RESET")
 
-    protected def keyword(text: String): UIO[Unit] = console.putStr(s"$BLUE_B$text$RESET")
+    protected def keyword(text: String): UIO[Unit] = console.putStr(s"$BLUE$BOLD$text$RESET")
 
-    protected def details(text: String): UIO[Unit] = console.putStr(s"$BLACK_B$text$RESET")
+    protected def details(text: String): UIO[Unit] = console.putStr(s"$BLACK$BOLD$text$RESET")
 
-    protected def link(text: String): UIO[Unit] = console.putStr(s"$MAGENTA_B$text$RESET")
+    protected def link(text: String): UIO[Unit] = console.putStr(s"$MAGENTA$BOLD$text$RESET")
 
     protected implicit class Syntax(op: UIO[Unit]) {
       def <->(next: UIO[Unit]): UIO[Unit] =
@@ -103,7 +103,7 @@ package object render {
 
     override def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit] = {
       ifNotVisitedYet(report) { ec2 =>
-        id *> sectionHeader("EC2/Instance") <-> highlighted(ec2.instanceId) <-> normal("is an EC2 instance in") *> normal(List(Some(ec2.region), ec2.vpcId, ec2.subnetId).flatten.mkString(" / ")) \\
+        id *> sectionHeader("EC2/Instance") <-> highlighted(ec2.instanceId) <-> normal("is an EC2 instance in") <-> normal(List(Some(ec2.region), ec2.vpcId, ec2.subnetId).flatten.mkString(" / ")) \\
         indented {
           id *> keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/v2/home?region=${ec2.region}#Instances:search=${ec2.instanceId}") \\
           id *> keyword("State") <:> highlighted(ec2.state.toString) \\
