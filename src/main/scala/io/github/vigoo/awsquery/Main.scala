@@ -2,12 +2,12 @@ package io.github.vigoo.awsquery
 
 import io.github.vigoo.awsquery.report._
 import io.github.vigoo.zioaws.core.AwsError
-import io.github.vigoo.zioaws.autoscaling.model.AutoScalingGroup
+import io.github.vigoo.zioaws.autoscaling.model.{AutoScalingGroup, LaunchConfiguration}
 import io.github.vigoo.zioaws.elasticloadbalancing.model.LoadBalancerDescription
-import io.github.vigoo.zioaws.elasticbeanstalk.model.{EnvironmentDescription, EnvironmentResourceDescription}
+import io.github.vigoo.zioaws.elasticbeanstalk.model.{ApplicationDescription, EnvironmentDescription, EnvironmentResourceDescription}
 import io.github.vigoo.zioaws.elasticbeanstalk.model.primitives.EnvironmentId
 import io.github.vigoo.zioaws.elasticloadbalancing.model.primitives.AccessPointName
-import io.github.vigoo.zioaws.{core, ec2, elasticbeanstalk, elasticloadbalancing, http4s}
+import io.github.vigoo.zioaws.{autoscaling, core, ec2, elasticbeanstalk, elasticloadbalancing, http4s}
 import zio._
 import zio.logging._
 import zio.logging.slf4j._
@@ -19,7 +19,7 @@ object Main extends App {
 
   import sources._
 
-  type AllServices = ec2.Ec2 with elasticloadbalancing.ElasticLoadBalancing with elasticbeanstalk.ElasticBeanstalk
+  type AllServices = ec2.Ec2 with elasticloadbalancing.ElasticLoadBalancing with elasticbeanstalk.ElasticBeanstalk with autoscaling.AutoScaling
 
   val cloudFormationStackRegex: Regex = """^awseb-(.*)-stack$""".r
 
@@ -29,7 +29,7 @@ object Main extends App {
       case None => ZQuery.none
     }
 
-  private def cached[R <: ReportCache, E, A, B <: Report, K <: ReportKey](input: A)(keyFn: A => ZIO[Any, E, K])(query: K => ZQuery[R, E, B]): ZQuery[R, E, B] =
+  private def cached[R <: ReportCache, E, A, B <: Report, K <: ReportKey](input: A)(keyFn: A => ZIO[Any, E, K])(query: K => ZQuery[R, E, B]): ZQuery[R, E, LinkedReport[K, B]] =
     for {
       cachedResultWithKey <- ZQuery.fromEffect {
         for {
@@ -39,16 +39,16 @@ object Main extends App {
       }
       (cachedResult, key) = cachedResultWithKey
       result <- cachedResult match {
-        case Some(cachedResult) => ZQuery.succeed(cachedResult)
+        case Some(_) => ZQuery.succeed(LinkedReport[K, B](key))
         case None =>
           for {
             result <- query(key)
             _ <- ZQuery.fromEffect(report.store(key, result))
-          } yield result
+          } yield LinkedReport[K, B](key)
       }
     } yield result
 
-  private def getEnvironmentsLoadBalancerReports(resource: EnvironmentResourceDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[ElbReport]] =
+  private def getEnvironmentsLoadBalancerReports(resource: EnvironmentResourceDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[LinkedReport[ElbKey, ElbReport]]] =
     for {
       elbNames <- ZQuery.fromEffect {
         for {
@@ -60,7 +60,7 @@ object Main extends App {
         elbNames.map(name => elbquery.getLoadBalancer(name) >>= getElbReport))
     } yield elbs
 
-  private def getEnvironmentsAutoScalingGroupReports(resource: EnvironmentResourceDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[AsgReport]] =
+  private def getEnvironmentsAutoScalingGroupReports(resource: EnvironmentResourceDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[LinkedReport[AsgKey, AsgReport]]] =
     for {
       asgNames <- ZQuery.fromEffect {
         for {
@@ -72,85 +72,232 @@ object Main extends App {
         asgNames.map(name => asgquery.getAutoScalingGroup(name) >>= getAsgReport))
     } yield asgs
 
-  private def getEbAppReport(app: elasticbeanstalk.model.primitives.ApplicationName): ZQuery[Logging with ReportCache with AllSErvices, AwsError, EbAppReport] =
-    ???
-
-  private def getAsgReport(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, AsgReport] =
-    cached(asg)(_.autoScalingGroupName.map(AsgKey.apply)) { (key: AsgKey) =>
+  private def getEbAppReport(name: elasticbeanstalk.model.primitives.ApplicationName): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[AppKey, EbAppReport]] =
+    cached(name)(name => ZIO.succeed(AppKey(name))) { (key: AppKey) =>
       for {
-        _ <- ebquery.ge
-      } yield AsgReport()
+        app <- ebquery.getApplicationByName(name).someOrFail(AwsError.fromThrowable(new IllegalStateException(s"EB Application not found for EB env"))) // TODO: review this
+        envs <- ebquery.getEnvironmentsByAppName(name)
+        envReports <- ZQuery.collectAllPar(envs.map(getEbEnvReport))
+      } yield EbAppReport(
+        name,
+        app.versionsValue.map(_.length).getOrElse(0),
+        envReports
+      )
     }
 
-  private def getEbEnvReport(env: EnvironmentDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, EbEnvReport] =
+  private def getLaunchConfigReport(lc: LaunchConfiguration.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[LaunchConfigKey, LaunchConfigReport]] =
+    cached(lc)(_.launchConfigurationName.map(LaunchConfigKey.apply)) { (key: LaunchConfigKey) =>
+      ZQuery.fromEffect {
+        for {
+          createdAt <- lc.createdTime
+          amiId <- lc.imageId
+          instanceProfileArn = lc.iamInstanceProfileValue
+          instanceType <- lc.instanceType
+          securityGroups <- lc.securityGroups
+        } yield LaunchConfigReport(
+          key.name,
+          createdAt,
+          amiId,
+          instanceProfileArn,
+          instanceType,
+          securityGroups
+        )
+      }
+    }
+
+  private def getAsgElbs(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, List[LinkedReport[ElbKey, ElbReport]]] =
+    for {
+      elbNames <- ZQuery.fromEffect(asg.loadBalancerNames)
+      result <- ZQuery.collectAllPar(elbNames.map(name => elbquery.getLoadBalancer(name) >>= getElbReport))
+    } yield result
+
+  private def getAsgEbEnv(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, Option[LinkedReport[EnvKey, EbEnvReport]]] =
+    for {
+      tagList <- ZQuery.fromEffect(asg.tags)
+      ebEnvNameTag = tagList.find(_.keyValue.contains("elasticbeanstalk:environment-name"))
+      ebName <- optionally(ebEnvNameTag) { tag =>
+        ZQuery.fromEffect(tag.value)
+      }
+      env <- optionally(ebName) { name =>
+        ebquery.getEnvironmentByName(name)
+      }.map(_.flatten)
+      result <- optionally(env)(getEbEnvReport)
+    } yield result
+
+  private def getAsgLaunchConfig(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[LaunchConfigKey, LaunchConfigReport]] =
+    for {
+      launchConfigName <- ZQuery.fromEffect(asg.launchConfigurationName)
+      launchConfig <- launchconfquery.getLaunchConfiguration(launchConfigName)
+      result <- getLaunchConfigReport(launchConfig)
+    } yield result
+
+  private def getAsgReport(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[AsgKey, AsgReport]] =
+    cached(asg)(_.autoScalingGroupName.map(AsgKey.apply)) { (key: AsgKey) =>
+      (getAsgElbs(asg) <&> getAsgEbEnv(asg) <&> getAsgLaunchConfig(asg)).map {
+        case ((elbs, ebEnvReport), launchConfigReport) =>
+          AsgReport(elbs, ebEnvReport, launchConfigReport)
+      }
+    }
+
+  private def getEbEnvReport(env: EnvironmentDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[EnvKey, EbEnvReport]] =
     cached(env)(_.environmentId.map(EnvKey.apply)) { (key: EnvKey) =>
       for {
-        appName <- env.applicationName
-        result <- ebquery.getEnvironmentResource(key.id).flatMap { resource =>
+        appName <- ZQuery.fromEffect(env.applicationName)
+        resource <- ebquery.getEnvironmentResource(key.id)
+        subQueries <-
           getEnvironmentsLoadBalancerReports(resource) <&>
-            getEnvironmentsAutoScalingGroupReports(resource)
-        } <&> getEbAppReport(appName)
-        ((elbs, asgs), app) = result
-      } yield EbEnvReport()
+            getEnvironmentsAutoScalingGroupReports(resource) <&>
+            getEbAppReport(appName)
+        ((elbs, asgs), app) = subQueries
+        result <- ZQuery.fromEffect {
+          for {
+            name <- env.environmentName
+            appName <- env.applicationName
+            health <- env.health
+            version <- env.versionLabel
+            instanceCount <- resource.instances.map(_.length)
+          } yield EbEnvReport(
+            name,
+            key.id,
+            appName,
+            health,
+            version,
+            asgs,
+            elbs,
+            app,
+            instanceCount
+          )
+        }
+      } yield result
     }
 
-  private def getElbReport(elb: LoadBalancerDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, ElbReport] = {
+  private def getElbReport(elb: LoadBalancerDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] =
     cached(elb)(_.loadBalancerName.map(ElbKey.apply)) { (key: ElbKey) =>
       for {
-        tags <- elbquery.getLoadBalancerTags(key.name)
-        cfStackNameTag = tags.find(_.keyValue == "aws:cloudformation:stack-name")
+        tagList <- elbquery.getLoadBalancerTags(key.name)
+        cfStackNameTag = tagList.find(_.keyValue == "aws:cloudformation:stack-name")
         ebName <- optionally(cfStackNameTag) { tag =>
           ZQuery.fromEffect(tag.value).map(tagValue => cloudFormationStackRegex.findFirstMatchIn(tagValue).map(_.group(1)))
         }.map(_.flatten)
         env <- optionally(ebName) { name =>
           (ebquery.getEnvironmentById(name) <&> ebquery.getEnvironmentByName(name)).map { case (a, b) => a.orElse(b) }
         }.map(_.flatten)
-        envResults <- optionally(env)(getEbEnvReport)
-      } yield ElbReport()
+        ebEnvReport <- optionally(env)(getEbEnvReport)
+        result <- ZQuery.fromEffect {
+          for {
+            tags <- ZIO.foreach(tagList) { tag =>
+              for {
+                key <- tag.key
+                value <- tag.value
+              } yield key -> value
+            }
+            availabilityZones <- elb.availabilityZones
+            listenerDescriptions <- elb.listenerDescriptions
+            listeners <- ZIO.foreach(listenerDescriptions)(_.listener)
+            instances <- elb.instances
+            instanceIds <- ZIO.foreach(instances)(_.instanceId)
+          } yield ElbReport(
+            key.name,
+            tags.toMap,
+            availabilityZones,
+            listeners,
+            instanceIds,
+            ebEnvReport
+          )
+        }
+      } yield result
     }
 
-    private def getInstanceReport(instanceId: ec2.model.primitives.InstanceId): ZQuery[Logging with ReportCache with AllServices, AwsError, Ec2InstanceReport] =
-      cached(instanceId)((id: ec2.model.primitives.InstanceId) => ZIO.succeed(Ec2InstanceKey(id))) { _ =>
-        for {
-          instance <- ec2query.getEc2Instance(instanceId)
-          imageId <- ZQuery.fromEffect(instance.imageId)
-          imgElb <- (ec2query.getImage(imageId) <&> elbquery.loadBalancerOf(instanceId))
-          (image, elb) = imgElb
-          elbReport <- optionally(elb)(getElbReport)
-        } yield Ec2InstanceReport()
-      }
-
-    private def runQuery(instanceId: String): ZIO[Logging with ReportCache with AllServices, AwsError, Unit] =
+  private def getInstanceReport(instanceId: ec2.model.primitives.InstanceId): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[Ec2InstanceKey, Ec2InstanceReport]] =
+    cached(instanceId)((id: ec2.model.primitives.InstanceId) => ZIO.succeed(Ec2InstanceKey(id))) { _ =>
       for {
-        result <- getInstanceReport(instanceId).run
-      } yield ()
+        instance <- ec2query.getEc2Instance(instanceId)
+        imageId <- ZQuery.fromEffect(instance.imageId)
+        imgElb <- (ec2query.getImage(imageId) <&> elbquery.loadBalancerOf(instanceId))
+        (image, elb) = imgElb
+        elbReport <- optionally(elb)(getElbReport)
 
-    // TODOs
-    // logging and rate limiting as aspects
-    // unify common code
-    // "execution graph dump" aspect for generating diagrams for the post?
-    // implicit withFilter to make zipPars nicer?
-    // cached report queries should return reportkey, typed reportlink between models to cut cycles
+        result <- ZQuery.fromEffect {
+          for {
+            state <- instance.state
+            stateName <- state.name
+            tagList <- instance.tags
+            tags <- ZIO.foreach(tagList) { tag =>
+              for {
+                key <- tag.key
+                value <- tag.value
+              } yield key -> value
+            }
+            instanceType <- instance.instanceType
+            securityGroupList <- instance.securityGroups
+            securityGroups <- ZIO.foreach(securityGroupList) { secGroup =>
+              for {
+                id <- secGroup.groupId
+                name <- secGroup.groupName
+              } yield id -> name
+            }
+            amiId <- image.imageId
+            amiName <- image.name
+            instanceProfile <- instance.iamInstanceProfile
+            instanceProfileArn <- instanceProfile.arn
+            sshKeyName <- instance.keyName
+            launchedAt <- instance.launchTime
+          } yield Ec2InstanceReport(
+            instanceId,
+            instance.vpcIdValue,
+            instance.subnetIdValue,
+            stateName,
+            tags.toMap,
+            instance.publicIpAddressValue,
+            instance.publicDnsNameValue,
+            instance.privateIpAddressValue,
+            instance.privateDnsNameValue,
+            instanceType,
+            securityGroups.toMap,
+            amiId,
+            amiName,
+            instanceProfileArn,
+            sshKeyName,
+            launchedAt,
+            elbReport
+          )
+        }
+      } yield result
+    }
 
-    override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
-      val logging = Slf4jLogger.make { (context, message) =>
-        val correlationId = LogAnnotation.CorrelationId.render(
-          context.get(LogAnnotation.CorrelationId)
+  private def runQuery(instanceId: String): ZIO[Logging with ReportCache with AllServices, AwsError, Unit] =
+    for {
+      result <- getInstanceReport(instanceId).run
+    } yield ()
+
+  // TODOs
+  // logging? and rate limiting as aspects
+  // unify common code
+  // "execution graph dump" aspect for generating diagrams for the post?
+  // implicit withFilter to make zipPars nicer?
+
+  override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
+    val logging = Slf4jLogger.make { (context, message) =>
+      val correlationId = LogAnnotation.CorrelationId.render(
+        context.get(LogAnnotation.CorrelationId)
+      )
+      s"[$correlationId] $message"
+    }
+    val finalLayer =
+      (http4s.client() >>> core.config.default >>>
+        (
+          ec2.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+          elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+          elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
+          autoscaling.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
         )
-        s"[$correlationId] $message"
-      }
-      val layer =
-        (http4s.client() >>> core.config.default >>>
-          (ec2.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-            elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-            elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
-            )) ++ logging
-      for {
-        _ <- runQuery(args(1))
-          .provideLayer(layer)
-          .catchAll { error =>
-            console.putStrLnErr(error.toString)
-          }
-      } yield ExitCode.success
-    }
+      ) ++ logging ++ report.live
+    for {
+      _ <- runQuery(args(1))
+        .provideLayer(finalLayer)
+        .catchAll { error =>
+          console.putStrLnErr(error.toString)
+        }
+    } yield ExitCode.success
   }
+}
