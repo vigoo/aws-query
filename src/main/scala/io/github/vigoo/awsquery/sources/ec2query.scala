@@ -10,9 +10,12 @@ import zio.query.{CompletedRequestMap, DataSource, Request, ZQuery}
 import zio.stream.ZStream
 
 object ec2query {
+
   case class GetEc2Instance(id: primitives.InstanceId) extends Request[AwsError, Instance.ReadOnly]
 
   val ec2InstancesDataSource: DataSource[Logging with ec2.Ec2, GetEc2Instance] = DataSource.Batched.make("ec2") { (requests: Chunk[GetEc2Instance]) =>
+    import AwsDataSource._
+
     log.locally(Name("EC2" :: Nil)) {
       for {
         _ <- log.info(s"DescribeInstances (${requests.map(_.id).mkString(", ")})")
@@ -24,13 +27,7 @@ object ec2query {
               instanceId <- item.instanceId
             } yield resultMap.insert(GetEc2Instance(instanceId))(Right(item))
           }
-          .catchAll { error =>
-            ZIO.succeed(
-              requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                resultMap.insert(req)(Left(error))
-              }
-            )
-          }
+          .recordFailures("DescribeInstances", requests)
       } yield result
     }
   }
@@ -41,6 +38,8 @@ object ec2query {
   case class GetImage(id: primitives.ImageId) extends Request[AwsError, Image.ReadOnly]
 
   val ec2ImagesDataSource: DataSource[Logging with ec2.Ec2, GetImage] = DataSource.Batched.make("ec2-images") { (requests: Chunk[GetImage]) =>
+    import AwsDataSource._
+
     log.locally(Name("EC2" :: Nil)) {
       (for {
         _ <- log.info(s"DescribeImages (${requests.map(_.id).mkString(", ")})")
@@ -51,13 +50,7 @@ object ec2query {
             imageId <- item.imageId
           } yield resultMap.insert(GetImage(imageId))(Right(item))
         }
-      } yield result).catchAll { error =>
-        ZIO.succeed(
-          requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-            resultMap.insert(req)(Left(error))
-          }
-        )
-      }
+      } yield result).recordFailures("DescribeImages", requests)
     }
   }
 

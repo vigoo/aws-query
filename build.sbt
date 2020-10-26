@@ -2,6 +2,8 @@ scalaVersion := "2.13.3"
 name := "aws-query"
 version := "0.1"
 resolvers += "Sonatype OSS Snapshots" at "https://oss.sonatype.org/content/repositories/snapshots"
+resolvers += Resolver.jcenterRepo
+
 libraryDependencies ++= Seq(
   "dev.zio" %% "zio" % "1.0.3",
   "dev.zio" %% "zio-streams" % "1.0.3",
@@ -17,6 +19,9 @@ libraryDependencies ++= Seq(
   "io.github.vigoo" %% "zio-aws-route53" % "2.14.7.0",
 
   "io.github.vigoo" %% "zio-aws-netty" % "2.14.7.0",
+
+  "nl.vroste" %% "rezilience" % "0.5.0",
+
   "org.apache.logging.log4j" % "log4j-core" % "2.13.3",
   "org.apache.logging.log4j" % "log4j-slf4j-impl" % "2.13.3",
   "com.lmax" % "disruptor" % "3.4.2",

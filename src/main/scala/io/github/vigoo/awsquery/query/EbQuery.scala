@@ -31,17 +31,7 @@ trait EbQuery {
             health <- env.health
             version <- env.versionLabel
             instanceCount <- resource.instances.map(_.length)
-          } yield EbEnvReport(
-            name,
-            key.id,
-            appName,
-            health,
-            version,
-            asgs,
-            elbs,
-            app,
-            instanceCount
-          )
+          } yield EbEnvReport(name, key.id, appName, health, version, asgs, elbs, app, instanceCount)
         }
       } yield result
     }
@@ -76,10 +66,7 @@ trait EbQuery {
         app <- ebquery.getApplicationByName(name).someOrFail(AwsError.fromThrowable(new IllegalStateException(s"EB Application not found for EB env")))
         envs <- ebquery.getEnvironmentsByAppName(name)
         envReports <- ZQuery.collectAllPar(envs.map(getEbEnvReport))
-      } yield EbAppReport(
-        name,
-        app.versionsValue.map(_.length).getOrElse(0),
-        envReports
-      )
+        numberOfVersions = app.versionsValue.map(_.length).getOrElse(0)
+      } yield EbAppReport(name, numberOfVersions, envReports)
     }
 }

@@ -20,6 +20,8 @@ object ebquery {
   case class GetEnvironmentByApplicationName(name: primitives.ApplicationName) extends EbEnvRequest[List[EnvironmentDescription.ReadOnly]]
 
   val ebEnvDataSource: DataSource[Logging with ElasticBeanstalk, EbEnvRequest[Any]] = DataSource.Batched.make("eb-env") { (requests: Chunk[EbEnvRequest[Any]]) =>
+    import AwsDataSource._
+
     log.locally(Name("EB" :: Nil)) {
       val byName = requests.collect { case GetEnvironmentByName(name) => name }
       val byId = requests.collect { case GetEnvironmentById(id) => id }
@@ -40,14 +42,7 @@ object ebquery {
                   .insert(GetEnvironmentById(id))(Right(Some(item)))
                   .insert(GetEnvironmentByName(name))(Right(Some(item)))
               }
-              .catchAll { error =>
-                log.error(s"DescribeEnvironmentRequest(name) failed with $error") *>
-                  ZIO.succeed(
-                    byName.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                      resultMap.insert(GetEnvironmentByName(req))(Left(error))
-                    }
-                  )
-              }
+              .recordFailures("DescribeEnvironmentRequest(name)", byName.map(GetEnvironmentByName))
             _ <- log.info(s"DescribeEnvironmentRequest (name=${byName.mkString(", ")}) completed ${resultMap.requests.size} items")
           } yield resultMap
         } else ZIO.succeed(CompletedRequestMap.empty)
@@ -67,14 +62,7 @@ object ebquery {
                   .insert(GetEnvironmentById(id))(Right(Some(item)))
                   .insert(GetEnvironmentByName(name))(Right(Some(item)))
               }
-              .catchAll { error =>
-                log.error(s"DescribeEnvironmentRequest(id) failed with $error") *>
-                  ZIO.succeed(
-                    byName.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                      resultMap.insert(GetEnvironmentById(req))(Left(error))
-                    }
-                  )
-              }
+              .recordFailures("DescribeEnvironmentRequest(id)", byId.map(GetEnvironmentByName))
             _ <- log.info(s"DescribeEnvironmentRequest (id=${byId.mkString(", ")}) completed ${resultMap.requests.size} items")
           } yield resultMap
         } else ZIO.succeed(CompletedRequestMap.empty)
@@ -98,15 +86,8 @@ object ebquery {
                   )
                 }
               (resultMap, items) = foldResult
-            } yield resultMap.insert(GetEnvironmentByApplicationName(appName))(Right(items))).catchAll { error =>
-              log.error(s"DescribeEnvironmentRequest(appName) failed with $error") *>
-                ZIO.succeed(
-                  byName.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                    resultMap.insert(GetEnvironmentByApplicationName(appName))(Left(error))
-                  }
-                )
-            }
-          }
+            } yield resultMap.insert(GetEnvironmentByApplicationName(appName))(Right(items)))
+          }.recordFailures("DescribeEnvironmentRequest(appName)", byAppName.map(GetEnvironmentByApplicationName))
         } else ZIO.succeed(CompletedRequestMap.empty)
 
       byNameResultMap
@@ -128,6 +109,8 @@ object ebquery {
   case class GetEnvironmentResource(id: primitives.EnvironmentId) extends Request[AwsError, EnvironmentResourceDescription.ReadOnly]
 
   val ebEnvResourcesDataSource: DataSource[Logging with ElasticBeanstalk, GetEnvironmentResource] = DataSource.Batched.make("eb-resource") { (requests: Chunk[GetEnvironmentResource]) =>
+    import AwsDataSource._
+
     log.locally(Name("EB" :: Nil)) {
       // no batching possible
       ZIO.foldLeft(requests)(CompletedRequestMap.empty) { (resultMap, request) =>
@@ -137,10 +120,8 @@ object ebquery {
             environmentId = Some(request.id)
           ))
           resource <- response.environmentResources
-        } yield resultMap.insert(request)(Right(resource))).catchAll { error =>
-          log.error(s"DescribeEnvironmentResources(id) failed with $error") *>
-            ZIO.succeed(resultMap.insert(request)(Left(error)))
-        }
+        } yield resultMap.insert(request)(Right(resource)))
+          .recordFailures("DescribeEnvironmentResources(id)", Seq(request))
       }
     }
   }
@@ -151,6 +132,8 @@ object ebquery {
   case class GetApplicationByName(name: primitives.ApplicationName) extends Request[AwsError, Option[ApplicationDescription.ReadOnly]]
 
   val ebAppDataSource: DataSource[Logging with ElasticBeanstalk, GetApplicationByName] = DataSource.Batched.make("eb-app") { (requests: Chunk[GetApplicationByName]) =>
+    import AwsDataSource._
+
     log.locally(Name("EB" :: Nil)) {
       (for {
         _ <- log.info(s"DescribeApplications (${requests.map(_.name).mkString(", ")})")
@@ -162,13 +145,8 @@ object ebquery {
             name <- item.applicationName
           } yield resultMap.insert(GetApplicationByName(name))(Right(Some(item)))
         }
-      } yield resultMap).catchAll { error =>
-        ZIO.succeed(
-          requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-            resultMap.insert(req)(Left(error))
-          }
-        )
-      }
+      } yield resultMap)
+        .recordFailures("DescribeApplications", requests)
     }
   }
 

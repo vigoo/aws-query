@@ -3,7 +3,7 @@ package io.github.vigoo.awsquery.query
 import io.github.vigoo.awsquery.query.Common.AllServices
 import io.github.vigoo.awsquery.report.{AsgKey, AsgReport, EbEnvReport, ElbKey, ElbReport, EnvKey, LaunchConfigKey, LaunchConfigReport, LinkedReport}
 import io.github.vigoo.awsquery.report.cache.ReportCache
-import io.github.vigoo.awsquery.sources.{ebquery, elbquery, launchconfquery}
+import io.github.vigoo.awsquery.sources.{asgquery, ebquery, elbquery, launchconfquery}
 import io.github.vigoo.zioaws.autoscaling.model.{AutoScalingGroup, LaunchConfiguration}
 import io.github.vigoo.zioaws.core.AwsError
 import zio.logging.Logging
@@ -11,6 +11,16 @@ import zio.query.ZQuery
 
 trait AsgQuery {
   this: Common with EbQuery with ElbQuery =>
+
+  def getAsgReportByInput(input: String): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[AsgKey, AsgReport]] = {
+    (asgquery.getAutoScalingGroup(input).optional <&> asgquery.getAutoScalingGroupByLaunchConfiguration(input)).flatMap {
+      case (a, b) =>
+        val asg = a.orElse(b)
+         .map((asg: AutoScalingGroup.ReadOnly) => ZQuery.succeed(asg))
+         .getOrElse(ZQuery.fail(AwsError.fromThrowable(new IllegalArgumentException(s"Cannot find ASG by input $input"))))
+        asg >>= getAsgReport
+    }
+  }
 
   def getAsgReport(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[AsgKey, AsgReport]] =
     cached(asg)(_.autoScalingGroupName.map(AsgKey.apply)) { (key: AsgKey) =>

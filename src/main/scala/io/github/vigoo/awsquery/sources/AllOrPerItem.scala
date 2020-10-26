@@ -29,9 +29,10 @@ trait AllOrPerItem[R, Req, Item] {
 }
 
 object AllOrPerItem {
-
   def make[R <: Logging, Req <: Request[AwsError, Any], Item](definition: AllOrPerItem[R, Req, Item])(implicit reqTag: ClassTag[Req]): DataSource[R, Req] =
     DataSource.Batched.make(definition.name) { (requests: Chunk[Req]) =>
+      import AwsDataSource._
+
       log.locally(Name(definition.name :: Nil)) {
         val containsAll = requests.exists(definition.isGetAll)
         val byName = requests.filter(definition.isPerItem)
@@ -55,14 +56,7 @@ object AllOrPerItem {
         }
 
         baseMap
-          .catchAll { error =>
-            log.error(s"${definition.name} get all failed with $error") *>
-              ZIO.succeed(
-                requests.foldLeft(CompletedRequestMap.empty) { case (resultMap, req) =>
-                  resultMap.insert(req)(Left(error))
-                }
-              )
-          }
+          .recordFailures(s"${definition.name} get all", requests)
           .flatMap { resultMap =>
             val alreadyHave = resultMap.requests.collect {
               case r: Req if definition.isPerItem(r) => r
@@ -79,13 +73,7 @@ object AllOrPerItem {
                         req <- definition.itemToReq(item)
                       } yield resultMap.insert(req)(Right(item))
                     }
-                    .catchAll { error =>
-                      log.error(s"${definition.name} get failed with $error") *>
-                        ZIO.succeed(
-                          missing.foldLeft(resultMap) { case (resultMap, req) =>
-                            resultMap.insert(req)(Left(error))
-                          })
-                    }
+                    .recordFailures("${definition.name} get", missing)
                   _ <- log.info(s"${definition.name} get finished with ${result.requests.size} items")
                 } yield result
               } else {

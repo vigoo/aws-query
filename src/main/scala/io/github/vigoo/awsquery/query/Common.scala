@@ -5,6 +5,7 @@ import io.github.vigoo.awsquery.report.cache.{ReportCache, storeIfNew}
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.{autoscaling, ec2, elasticbeanstalk, elasticloadbalancing}
 import zio.ZIO
+import zio.ZIO.CanFilter
 import zio.logging.Logging
 import zio.query.ZQuery
 import zio.query.Described._

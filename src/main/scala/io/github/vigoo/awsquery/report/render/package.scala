@@ -135,4 +135,5 @@ package object render {
     ZIO.accessM(_.get.renderEc2Instance(report))
   def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): ZIO[Rendering, Nothing, Unit] =
     ZIO.accessM(_.get.renderElb(report, context))
+  def renderAsg(report: LinkedReport[AsgKey, AsgReport]): ZIO[Rendering, Nothing, Unit] = ???
 }

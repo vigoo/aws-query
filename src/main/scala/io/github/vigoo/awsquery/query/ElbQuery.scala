@@ -1,5 +1,7 @@
 package io.github.vigoo.awsquery.query
 
+import java.net.URI
+
 import io.github.vigoo.awsquery.query.Common.AllServices
 import io.github.vigoo.awsquery.report.{ElbKey, ElbReport, LinkedReport}
 import io.github.vigoo.awsquery.report.cache.ReportCache
@@ -10,12 +12,38 @@ import zio.ZIO
 import zio.logging.Logging
 import zio.query.ZQuery
 
+import scala.util.{Failure, Success, Try}
 import scala.util.matching.Regex
 
 trait ElbQuery {
   this: Common with EbQuery =>
 
   private val cloudFormationStackRegex: Regex = """^awseb-(.*)-stack$""".r
+  private val domainRegex: Regex = "^(dualstack\\.)?(.*)-[0-9]*\\.([-a-z0-9]*)\\.elb\\.amazonaws\\.com$".r("dualstack", "name", "region")
+
+  def getElbReportByInput(input: String): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] = {
+    Try(Option(URI.create(input).getAuthority).getOrElse(input)) match {
+      case Failure(_) =>
+        getElbReportByNameOrInstanceId(input)
+      case Success(domain) =>
+        domainRegex.findFirstMatchIn(domain) match {
+          case Some(m) =>
+            elbquery.getLoadBalancer(m.group("name")) >>= getElbReport
+          case None =>
+            getElbReportByNameOrInstanceId(input)
+        }
+    }
+  }
+
+  private def getElbReportByNameOrInstanceId(input: String): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] =
+    if (input.startsWith("i-")) {
+      elbquery
+        .loadBalancerOf(input)
+        .someOrFail(AwsError.fromThrowable(new IllegalArgumentException(s"could not find ELB containing instance $input"))) >>=
+        getElbReport
+    } else {
+      elbquery.getLoadBalancer(input) >>= getElbReport
+    }
 
   def getElbReport(elb: LoadBalancerDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] =
     cached(elb)(_.loadBalancerName.map(ElbKey.apply)) { (key: ElbKey) =>

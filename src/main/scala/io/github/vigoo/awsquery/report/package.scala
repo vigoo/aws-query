@@ -4,7 +4,7 @@ import io.github.vigoo.zioaws.ec2.model.primitives.DateTime
 import io.github.vigoo.zioaws.{autoscaling, ec2, elasticbeanstalk, elasticloadbalancing}
 
 package object report {
-  final case class LinkedReport[K <: ReportKey, R <: Report](key: K)
+  final case class LinkedReport[+K <: ReportKey, +R <: Report](key: K)
 
 
   sealed trait ReportKey

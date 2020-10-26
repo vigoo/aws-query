@@ -24,6 +24,8 @@ object elbquery {
   val elbDataSource: DataSource[Logging with ElasticLoadBalancing, ElbRequest[Any]] =
     AllOrPerItem.make(
       new AllOrPerItem[Logging with ElasticLoadBalancing, ElbRequest[Any], LoadBalancerDescription.ReadOnly] {
+        import AwsDataSource._
+
         override val name: String = "ELB"
 
         override def isGetAll(request: ElbRequest[Any]): Boolean =
@@ -64,12 +66,7 @@ object elbquery {
               }
             } yield descriptionMap.foldLeft(partialResult) { case (resultMap, (name, tags)) =>
               resultMap.insert(GetLoadBalancerTags(name))(Right(tags))
-            }).catchAll { error =>
-              ZIO.succeed(
-                tagsByName.foldLeft(partialResult) { case (resultMap, name) =>
-                  resultMap.insert(GetLoadBalancerTags(name))(Left(error))
-                })
-            }
+            }).recordFailures("DescribeTags", tagsByName.map(GetLoadBalancerTags))
           } else {
             ZIO.succeed(partialResult)
           }
