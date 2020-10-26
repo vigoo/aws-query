@@ -16,16 +16,18 @@ import zio.logging.slf4j._
 import zio.query.ZQuery
 
 object Main extends App {
-  private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[Console with Logging with ReportCache with AllServices, AwsError, Option[LinkedReport[K, R]]],
+  private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[Console with Logging with ReportCache with AllServices, AwsError, LinkedReport[K, R]],
                                                        render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[Console with Logging with ReportCache with AllServices, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
-    query.map(_.map(render))
+    query
+      .foldCauseM(_ => ZQuery.none, ZQuery.some(_))
+      .map(_.map(render))
 
   private def runQuery(input: String): ZIO[Console with Logging with ReportCache with Rendering with AllServices, AwsError, Unit] = {
     val possibleQueries =
       List(
-        renderQuery[Ec2InstanceKey, Ec2InstanceReport](Queries.getInstanceReport(input).optional, renderEc2Instance),
-        renderQuery[ElbKey, ElbReport](Queries.getElbReportByInput(input).optional, renderElb(_, None)),
-        renderQuery[AsgKey, AsgReport](Queries.getAsgReportByInput(input).optional, renderAsg),
+        renderQuery[Ec2InstanceKey, Ec2InstanceReport](Queries.getInstanceReport(input), renderEc2Instance),
+        renderQuery[ElbKey, ElbReport](Queries.getElbReportByInput(input), renderElb(_, None)),
+        renderQuery[AsgKey, AsgReport](Queries.getAsgReportByInput(input), renderAsg),
       )
 
     for {
