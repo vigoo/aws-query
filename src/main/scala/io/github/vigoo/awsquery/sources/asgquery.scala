@@ -56,6 +56,6 @@ object asgquery {
   def getAutoScalingGroupByLaunchConfiguration(launchConfigurationName: ResourceName): ZQuery[Logging with AutoScaling, AwsError, Option[AutoScalingGroup.ReadOnly]] =
     for {
       asgs <- getAllAutoScalingGroups()
-      map <- ZQuery.foreachPar(asgs.toList)(asg => ZQuery.fromEffect(asg.launchConfigurationName.map(_ -> asg)))
-    } yield map.toMap.get(launchConfigurationName)
+      map = asgs.map(asg => asg.launchConfigurationNameValue -> asg)
+    } yield map.toMap.get(Some(launchConfigurationName))
 }
