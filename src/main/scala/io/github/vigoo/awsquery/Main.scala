@@ -19,6 +19,7 @@ import io.github.vigoo.zioaws.ec2.Ec2
 import io.github.vigoo.zioaws.elasticbeanstalk.ElasticBeanstalk
 import io.github.vigoo.zioaws.elasticloadbalancing.ElasticLoadBalancing
 import nl.vroste.rezilience.CircuitBreaker.State
+import nl.vroste.rezilience.Policy.PolicyError
 import nl.vroste.rezilience.{CircuitBreaker, Policy, Retry, TrippingStrategy}
 import org.apache.logging.log4j.core.config.Configurator
 import org.apache.logging.log4j.{Level, LogManager}
@@ -35,6 +36,7 @@ import zio.duration.durationInt
 import zio.logging._
 import zio.logging.slf4j._
 import zio.query.ZQuery
+import zio.random.Random
 
 object Main extends App {
 
@@ -69,7 +71,7 @@ object Main extends App {
   // "execution graph dump" aspect for generating diagrams for the post?
   // typesafe pprint monad
 
-  private def throttlingPolicy: ZManaged[Clock with Logging, Nothing, Policy[AwsError]] =
+  private def throttlingPolicy: ZManaged[Random with Clock with Logging, Nothing, Policy[AwsError]] =
     for {
       logging <- ZManaged.environment[Logging]
       cb <- CircuitBreaker.make[AwsError](
@@ -87,9 +89,11 @@ object Main extends App {
             log.info(s"Circuit breaker open").provide(logging)
         }
       )
-    } yield cb.toPolicy
+      retry <- Retry.make()
+      retryComposable = retry.widen[PolicyError[AwsError]] { case Policy.WrappedError(e) => e }
+    } yield cb.toPolicy compose retryComposable.toPolicy
 
-  private def awsQuery(): ZIO[Clock with Console with Logging with ClippConfig[Parameters], Nothing, ExitCode] =
+  private def awsQuery(): ZIO[Random with Clock with Console with Logging with ClippConfig[Parameters], Nothing, ExitCode] =
     throttlingPolicy.use { policy =>
       val throttling = new AwsCallAspect[Any] {
         override def apply[R1, A](f: ZIO[R1, AwsError, aspects.Described[A]]): ZIO[R1, AwsError, aspects.Described[A]] =
@@ -141,9 +145,20 @@ object Main extends App {
       verbose <- flag("Verbose logging", 'v', "verbose")
       searchInput <- parameter[String]("Search input", "NAME_OR_ID")
     } yield Parameters(verbose, searchInput)
-    val params = clipp.zioapi.config.fromArgsWithUsageInfo(args, paramSpec)
 
-    val log4j2 = ZLayer.fromService[ClippConfig.Service[Parameters], Unit] { params =>
+    val params = clipp.zioapi.config.fromArgsWithUsageInfo(args, paramSpec)
+    val logging = log4j2Configuration >>> Slf4jLogger.make { (_, message) => message }
+
+    for {
+      result <- awsQuery()
+        .provideCustomLayer(params >+> logging)
+        .catchAll { failure: ParserFailure => ZIO.succeed(ExitCode.failure) }
+      _ <- ZIO.effect(LogManager.shutdown()).orDie
+    } yield result
+  }
+
+  private def log4j2Configuration = {
+    ZLayer.fromService[ClippConfig.Service[Parameters], Unit] { params =>
       ZIO.effect {
         val builder = ConfigurationBuilderFactory.newConfigurationBuilder()
 
@@ -165,14 +180,5 @@ object Main extends App {
         Configurator.initialize(builder.build())
       }
     }
-
-    val logging = log4j2 >>> Slf4jLogger.make { (_, message) => message }
-
-    for {
-      result <- awsQuery()
-        .provideCustomLayer(params >+> logging)
-        .catchAll { failure: ParserFailure => ZIO.succeed(ExitCode.failure) }
-      _ <- ZIO.effect(LogManager.shutdown()).orDie
-    } yield result
   }
 }
