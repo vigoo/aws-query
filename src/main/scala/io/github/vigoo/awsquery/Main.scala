@@ -67,16 +67,12 @@ object Main extends App {
     }
   }
 
-  // TODOs
-  // "execution graph dump" aspect for generating diagrams for the post?
-  // typesafe pprint monad
-
   private def throttlingPolicy: ZManaged[Random with Clock with Logging, Nothing, Policy[AwsError]] =
     for {
       logging <- ZManaged.environment[Logging]
       cb <- CircuitBreaker.make[AwsError](
         trippingStrategy = TrippingStrategy.failureCount(1),
-        resetPolicy = Retry.Schedules.exponentialBackoff(1.second, 1.minute),
+        resetPolicy = Retry.Schedules.exponentialBackoff(min = 1.second, max = 1.minute),
         isFailure = {
           case GenericAwsError(error: AwsServiceException) if error.isThrottlingException => true
         },
@@ -89,7 +85,7 @@ object Main extends App {
             log.info(s"Circuit breaker open").provide(logging)
         }
       )
-      retry <- Retry.make()
+      retry <- Retry.make(min = 1.second, max = 1.minute)
       retryComposable = retry.widen[PolicyError[AwsError]] { case Policy.WrappedError(e) => e }
     } yield cb.toPolicy compose retryComposable.toPolicy
 

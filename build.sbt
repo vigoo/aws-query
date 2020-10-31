@@ -10,6 +10,7 @@ libraryDependencies ++= Seq(
   "dev.zio" %% "zio" % "1.0.3",
   "dev.zio" %% "zio-streams" % "1.0.3",
   "dev.zio" %% "zio-query" % "0.2.5+12-c41557f7-SNAPSHOT",
+  "dev.zio" %% "zio-prelude" % "1.0.0-RC1",
   "dev.zio" %% "zio-logging-slf4j" % "0.5.0",
 
   "io.github.vigoo" %% "zio-aws-autoscaling" % zioAwsVersion,

@@ -4,6 +4,7 @@ import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.zioaws.core.AwsError
 import zio._
 import zio.console.Console
+import zio.prelude._
 
 import scala.io.AnsiColor._
 
@@ -14,7 +15,62 @@ package object render {
 
     trait Service {
       def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit]
+
       def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit]
+    }
+
+  }
+
+  sealed trait Print[+A]
+  case class Pure[A](a: A) extends Print[A]
+  case class PrintS(s: String) extends Print[Unit]
+  case class PrintModified(s: String, modifiers: String) extends Print[Unit]
+  case object PrintNL extends Print[Unit]
+  case class PrintIndented[A](p: Print[A]) extends Print[A]
+  case class PrintFlatMap[A, B](a: Print[A], f: A => Print[B]) extends Print[B]
+  case class PrintEffect[A](f: UIO[A]) extends Print[A]
+
+
+  object Print {
+    implicit val print = new Covariant[Print] with IdentityFlatten[Print] with IdentityBoth[Print] {
+      override def map[A, B](f: A => B): Print[A] => Print[B] = fa => PrintFlatMap(fa, (a: A) => Pure(f(a)))
+
+      override def any: Print[Any] = Pure(())
+      override def flatten[A](ffa: Print[Print[A]]): Print[A] = PrintFlatMap(ffa, (fa: Print[A]) => fa)
+      override def both[A, B](fa: => Print[A], fb: => Print[B]): Print[(A, B)] = PrintFlatMap(fa, (a: A) => map((b: B) => (a, b))(fb))
+    }
+
+    val unit: Print[Unit] = Pure(())
+    val space: Print[Unit] = PrintS(" ")
+    val newLine: Print[Unit] = PrintNL
+
+    def indented[A](inner: Print[A]): Print[A] = PrintIndented(inner)
+
+    def normal(text: String): Print[Unit] = PrintS(text)
+
+    def details(text: String): Print[Unit] = PrintModified(text, CYAN)
+
+    def sectionHeader(text: String): Print[Unit] = PrintS("[") *> PrintModified(text, s"$MAGENTA$BOLD") *> PrintS("]")
+
+    def highlighted(text: String): Print[Unit] = PrintModified(text, s"$GREEN$BOLD")
+
+    def keyword(text: String): Print[Unit] = PrintModified(text, s"$YELLOW$BOLD")
+
+    def link(text: String): Print[Unit] = PrintModified(text, s"$MAGENTA$BOLD$UNDERLINED")
+
+    def error(text: String): Print[Unit] = PrintModified(text, RED)
+
+    def lift[A](f: UIO[A]): Print[A] = PrintEffect(f)
+
+    implicit class PrintOps[A](self: Print[A]) {
+      def <->[B](next: => Print[B]): Print[B] =
+        self *> space *> next
+
+      def \\(next: => Print[Unit]): Print[Unit] =
+        self *> newLine *> next
+
+      def <:>(next: => Print[Unit]): Print[Unit] =
+        self *> details(":") *> space *> next
     }
 
   }
@@ -22,32 +78,18 @@ package object render {
   private trait PrettyConsole {
     protected val console: Console.Service
 
-    protected def newLine: UIO[Unit] = console.putStrLn("")
-    protected def space: UIO[Unit] = console.putStr(" ")
+    private def runImpl[A](p: Print[A], indentation: String, afterNL: Boolean): UIO[A] =
+      p match {
+        case Pure(a) => ZIO.succeed(a)
+        case PrintS(s) => ZIO.when(afterNL)(console.putStr(indentation)) *> console.putStr(s)
+        case PrintModified(s, modifiers) => ZIO.when(afterNL)(console.putStr(indentation)) *> console.putStr(s"${modifiers}$s$RESET")
+        case PrintNL => console.putStrLn("")
+        case PrintIndented(f) => runImpl(f, indentation = indentation + "  ", afterNL = false)
+        case PrintFlatMap(a, f) => runImpl(a, indentation, afterNL) >>= f.andThen(p => runImpl(p, indentation, a == PrintNL))
+        case PrintEffect(f) => f
+      }
 
-    protected def normal(text: String): UIO[Unit] = console.putStr(text)
-
-    protected def sectionHeader(text: String): UIO[Unit] = console.putStr(s"[$RESET$MAGENTA$BOLD$text$RESET]")
-
-    protected def highlighted(text: String): UIO[Unit] = console.putStr(s"$GREEN$BOLD$text$RESET")
-
-    protected def keyword(text: String): UIO[Unit] = console.putStr(s"$YELLOW$BOLD$text$RESET")
-
-    protected def details(text: String): UIO[Unit] = console.putStr(s"$CYAN$text$RESET")
-
-    protected def link(text: String): UIO[Unit] = console.putStr(s"$MAGENTA$BOLD$UNDERLINED$text$RESET")
-
-    protected implicit class Syntax(op: UIO[Unit]) {
-      def <->(next: UIO[Unit]): UIO[Unit] =
-        op *> space *> next
-
-      def \\(next: UIO[Unit]): UIO[Unit] =
-        op *> newLine *> next
-
-      def <:>(next: UIO[Unit]): UIO[Unit] =
-        op *> details(":") *> space *> next
-    }
-
+    def run[A](p: Print[A]): UIO[A] = runImpl(p, "", afterNL = false)
   }
 
   private class PrettyConsoleRendering(state: Ref[State],
@@ -55,85 +97,91 @@ package object render {
                                        reportCache: ReportCache.Service)
     extends Rendering.Service with PrettyConsole {
 
-    private def id: UIO[Unit] =
-      state.get.flatMap(state => console.putStr(state.indentation))
+    import Print._
 
-    private def indented(f: UIO[Unit]): UIO[Unit] =
-      state.get.flatMap { st =>
-        for {
-          _ <- state.set(st.copy(indentation = st.indentation + "  "))
-          _ <- f
-          _ <- state.set(st)
-        } yield ()
+    private def keyValueList(items: Map[String, String]): Print[Unit] =
+      items.toList.foreach_ { case (key, value) =>
+        keyword(key) *> details(":") <-> normal(value) *> newLine
       }
 
-    private def keyValueList(items: Map[String, String]): UIO[Unit] =
-      ZIO.foreach_(items) { case (key, value) =>
-        id *> keyword(key) *> details(":") <-> normal(value) *> newLine
-      }
-
-    private def ifDefined[A](value: Option[A])(f: A => UIO[Unit]): UIO[Unit] =
+    private def ifDefined[A](value: Option[A])(f: A => Print[Unit]): Print[Unit] =
       value match {
         case Some(value) =>
           f(value)
         case None =>
-          ZIO.unit
+          unit
       }
 
-    private def ifNotVisitedYet[K <: ReportKey, R <: Report](link: LinkedReport[K, R])(f: R => UIO[Unit]): UIO[Unit] =
-      state.get.flatMap { st =>
-        (for {
-          report <- reportCache
-            .retrieve[R](link.key)
-            .someOrFail(AwsError.fromThrowable(new IllegalStateException(s"${link.key} not found")))
-          _ <- state.set(st.copy(alreadyVisited = st.alreadyVisited + link.key))
-          _ <- f(report)
-        } yield ())
-          .catchAll { error =>
-            console.putStrLnErr(s"Failed to retrieve cached report: $error")
+    private def ifNotVisitedYet[K <: ReportKey, R <: Report](link: LinkedReport[K, R])(f: R => Print[Unit]): Print[Unit] =
+      for {
+        st <- lift(state.get)
+        report <-
+          if (st.alreadyVisited(link.key)) {
+            unit
+          } else {
+            for {
+              reportOrFailure <- lift(reportCache
+                .retrieve[R](link.key)
+                .either)
+              _ <- lift(state.set(st.copy(alreadyVisited = st.alreadyVisited + link.key)))
+              _ <- reportOrFailure match {
+                case Left(failure) => error(failure.toString)
+                case Right(None) => error(s"Not found: ${link.key}")
+                case Right(Some(report)) => f(report)
+              }
+            } yield ()
           }
-          .unless(st.alreadyVisited.contains(link.key))
-      }
+      } yield ()
 
-    override def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit] = {
+    private def elb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): Print[Unit] =
       ifNotVisitedYet(report) { elb =>
-        id *> sectionHeader("ELB") <-> highlighted(elb.name) <-> ifDefined(context)(details) *> newLine
+        sectionHeader("ELB") <-> highlighted(elb.name) <-> ifDefined(context)(details) *> newLine
       }
-    }
 
-    override def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit] = {
+    private def ec2(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): Print[Unit] =
       ifNotVisitedYet(report) { ec2 =>
-        id *> sectionHeader("EC2/Instance") <-> highlighted(ec2.instanceId) <-> normal("is an EC2 instance in") <-> normal(List(Some(ec2.region), ec2.vpcId, ec2.subnetId).flatten.mkString(" / ")) \\
-        indented {
-          id *> keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/v2/home?region=${ec2.region}#Instances:search=${ec2.instanceId}") \\
-          id *> keyword("State") <:> highlighted(ec2.state.toString) \\
-          id *> keyword("Tags") <:> newLine *> indented(keyValueList(ec2.tags)) *>
-          ifDefined(ec2.publicIp) { ip => id *> keyword("Public IP") <:> normal(ip) <-> ifDefined(ec2.publicDns)(details) *> newLine } *>
-          ifDefined(ec2.privateIp) { ip => id *> keyword("Private IP") <:> normal(ip) <-> ifDefined(ec2.privateDns)(details) *> newLine } *>
-          id *> keyword("Instance type") <:> normal(ec2.instanceType.toString) \\
-          id *> keyword("Security groups") <:> ZIO.foreach_(ec2.securityGroups) { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") *> space } \\
-          id *> keyword("AMI") <:> normal(ec2.amiName) <-> details(s"(${ec2.amiId})") \\
-          id *> keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(s"(${ec2.instanceProfileId})") \\
-          id *> keyword("SSH key name") <:> normal(ec2.sshKeyName) \\
-          id *> keyword("Launched at") <:> normal(ec2.launchedAt.toString) \\
-          ifDefined(ec2.elb) { elb => indented { renderElb(elb, Some(s"the instance ${ec2.instanceId} is registered into this ELB ")) } *> newLine }
-        }
+        sectionHeader("EC2/Instance") <-> highlighted(ec2.instanceId) <-> normal("is an EC2 instance in") <-> normal(List(Some(ec2.region), ec2.vpcId, ec2.subnetId).flatten.mkString(" / ")) \\
+          indented {
+            keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/v2/home?region=${ec2.region}#Instances:search=${ec2.instanceId}") \\
+              keyword("State") <:> highlighted(ec2.state.toString) \\
+              keyword("Tags") <:> newLine *> indented(keyValueList(ec2.tags)) *>
+              ifDefined(ec2.publicIp) { ip => keyword("Public IP") <:> normal(ip) <-> ifDefined(ec2.publicDns)(details) *> newLine } *>
+              ifDefined(ec2.privateIp) { ip => keyword("Private IP") <:> normal(ip) <-> ifDefined(ec2.privateDns)(details) *> newLine } *>
+              keyword("Instance type") <:> normal(ec2.instanceType.toString) \\
+              keyword("Security groups") <:> ec2.securityGroups.toList.foreach_ { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") *> space } \\
+              keyword("AMI") <:> normal(ec2.amiName) <-> details(s"(${ec2.amiId})") \\
+              keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(s"(${ec2.instanceProfileId})") \\
+              keyword("SSH key name") <:> normal(ec2.sshKeyName) \\
+              keyword("Launched at") <:> normal(ec2.launchedAt.toString) \\
+              ifDefined(ec2.elb) { e =>
+                indented {
+                  elb(e, Some(s"the instance ${ec2.instanceId} is registered into this ELB "))
+                } *> newLine
+              }
+          }
       }
-    }
+
+    override def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit] =
+      run(elb(report, context))
+
+    override def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit] =
+      run(ec2(report))
   }
 
-  private case class State(alreadyVisited: Set[ReportKey], indentation: String)
+  private case class State(alreadyVisited: Set[ReportKey])
 
   val live: ZLayer[Console with ReportCache, Nothing, Rendering] = ZLayer.fromServicesM[Console.Service, ReportCache.Service, Any, Nothing, Rendering.Service] {
     (console, reportCache) =>
       for {
-        alreadyVisited <- Ref.make(State(Set.empty, ""))
+        alreadyVisited <- Ref.make(State(Set.empty))
       } yield new PrettyConsoleRendering(alreadyVisited, console, reportCache)
   }
 
   def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): ZIO[Rendering, Nothing, Unit] =
     ZIO.accessM(_.get.renderEc2Instance(report))
+
   def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): ZIO[Rendering, Nothing, Unit] =
     ZIO.accessM(_.get.renderElb(report, context))
+
   def renderAsg(report: LinkedReport[AsgKey, AsgReport]): ZIO[Rendering, Nothing, Unit] = ???
 }
