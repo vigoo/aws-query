@@ -24,7 +24,11 @@ libraryDependencies ++= Seq(
 
   "nl.vroste" %% "rezilience" % "0.5.0",
 
+  "io.github.vigoo" %% "clipp-zio" % "0.4.0",
+
   "org.apache.logging.log4j" % "log4j-core" % "2.13.3",
   "org.apache.logging.log4j" % "log4j-slf4j-impl" % "2.13.3",
   "com.lmax" % "disruptor" % "3.4.2",
 )
+
+scalacOptions += "-deprecation"
