@@ -7,7 +7,10 @@ import io.github.vigoo.awsquery.report.cache._
 import io.github.vigoo.awsquery.report.render.{Rendering, renderAsg, renderEc2Instance, renderElb}
 import io.github.vigoo.zioaws._
 import io.github.vigoo.zioaws.core.AwsError
+import io.github.vigoo.zioaws.core.config.CommonAwsConfig
 import org.apache.logging.log4j.LogManager
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
+import software.amazon.awssdk.regions.Region
 import zio._
 import zio.clock.Clock
 import zio.console.Console
@@ -19,7 +22,7 @@ object Main extends App {
   private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[Console with Logging with ReportCache with AllServices, AwsError, LinkedReport[K, R]],
                                                        render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[Console with Logging with ReportCache with AllServices, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
     query
-      .foldCauseM(_ => ZQuery.none, ZQuery.some(_))
+      .foldCauseM(_ => ZQuery.none, ZQuery.some(_)) // don't care bout failures, we just want to report successful matches
       .map(_.map(render))
 
   private def runQuery(input: String): ZIO[Console with Logging with ReportCache with Rendering with AllServices, AwsError, Unit] = {
@@ -40,17 +43,22 @@ object Main extends App {
   // rate limiting as zio-aws aspects
   // "execution graph dump" aspect for generating diagrams for the post?
   // typesafe pprint monad
-  // shared region config (with zio-config)
   // clipp
 
   override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
     val logging = Slf4jLogger.make { (context, message) => message }
-    val awsCore = netty.client() >>> core.config.default
+    val commonConfig = ZLayer.succeed(CommonAwsConfig(
+      region = Some(Region.US_EAST_1),
+      credentialsProvider = DefaultCredentialsProvider.create(),
+      endpointOverride = None,
+      commonClientConfig = None
+    ))
+    val awsCore = (netty.default ++ commonConfig) >>> core.config.configured
     val awsClients =
-      ec2.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-        elasticloadbalancing.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-        elasticbeanstalk.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1)) ++
-        autoscaling.customized(_.region(software.amazon.awssdk.regions.Region.US_EAST_1))
+        ec2.live ++
+        elasticloadbalancing.live ++
+        elasticbeanstalk.live ++
+        autoscaling.live
     val finalLayer =
       (awsCore >>> awsClients) ++
         logging ++
