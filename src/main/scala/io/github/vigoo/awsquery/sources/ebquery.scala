@@ -62,7 +62,7 @@ object ebquery {
                   .insert(GetEnvironmentById(id))(Right(Some(item)))
                   .insert(GetEnvironmentByName(name))(Right(Some(item)))
               }
-              .recordFailures("DescribeEnvironmentRequest(id)", byId.map(GetEnvironmentByName))
+              .recordFailures("DescribeEnvironmentRequest(id)", byId.map(GetEnvironmentById))
             _ <- log.info(s"DescribeEnvironmentRequest (id=${byId.mkString(", ")}) completed ${resultMap.requests.size} items")
           } yield resultMap
         } else ZIO.succeed(CompletedRequestMap.empty)

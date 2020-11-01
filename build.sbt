@@ -14,12 +14,9 @@ libraryDependencies ++= Seq(
   "dev.zio" %% "zio-logging-slf4j" % "0.5.0",
 
   "io.github.vigoo" %% "zio-aws-autoscaling" % zioAwsVersion,
-  "io.github.vigoo" %% "zio-aws-cloudwatch" % zioAwsVersion,
-  "io.github.vigoo" %% "zio-aws-cloudfront" % zioAwsVersion,
   "io.github.vigoo" %% "zio-aws-ec2" % zioAwsVersion,
   "io.github.vigoo" %% "zio-aws-elasticloadbalancing" % zioAwsVersion,
   "io.github.vigoo" %% "zio-aws-elasticbeanstalk" % zioAwsVersion,
-  "io.github.vigoo" %% "zio-aws-route53" % zioAwsVersion,
 
   "io.github.vigoo" %% "zio-aws-netty" % zioAwsVersion,
 

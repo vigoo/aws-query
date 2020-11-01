@@ -4,30 +4,24 @@ import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
 import io.github.vigoo.awsquery.query.Queries
 import io.github.vigoo.awsquery.report._
 import io.github.vigoo.awsquery.report.cache._
-import io.github.vigoo.awsquery.report.render.{Rendering, renderAsg, renderEbApp, renderEbEnv, renderEc2Instance, renderElb}
+import io.github.vigoo.awsquery.report.render._
 import io.github.vigoo.clipp
 import io.github.vigoo.clipp.ParserFailure
-import io.github.vigoo.clipp.syntax._
 import io.github.vigoo.clipp.parsers._
+import io.github.vigoo.clipp.syntax._
 import io.github.vigoo.clipp.zioapi.config.{ClippConfig, parameters}
 import io.github.vigoo.zioaws._
-import io.github.vigoo.zioaws.autoscaling.AutoScaling
-import io.github.vigoo.zioaws.core.{AwsError, GenericAwsError, aspects}
 import io.github.vigoo.zioaws.core.aspects.{AwsCallAspect, Described}
-import io.github.vigoo.zioaws.core.config.{AwsConfig, CommonAwsConfig}
-import io.github.vigoo.zioaws.ec2.Ec2
-import io.github.vigoo.zioaws.elasticbeanstalk.ElasticBeanstalk
-import io.github.vigoo.zioaws.elasticloadbalancing.ElasticLoadBalancing
+import io.github.vigoo.zioaws.core.config.CommonAwsConfig
+import io.github.vigoo.zioaws.core.{AwsError, GenericAwsError, aspects}
 import nl.vroste.rezilience.CircuitBreaker.State
 import nl.vroste.rezilience.Policy.PolicyError
 import nl.vroste.rezilience.{CircuitBreaker, Policy, Retry, TrippingStrategy}
 import org.apache.logging.log4j.core.config.Configurator
+import org.apache.logging.log4j.core.config.builder.api.ConfigurationBuilderFactory
 import org.apache.logging.log4j.{Level, LogManager}
-import org.apache.logging.log4j.core.config.builder.api.{ConfigurationBuilder, ConfigurationBuilderFactory}
-import org.apache.logging.log4j.core.config.builder.impl.BuiltConfiguration
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider
 import software.amazon.awssdk.awscore.exception.AwsServiceException
-import software.amazon.awssdk.core.exception.SdkException
 import software.amazon.awssdk.regions.Region
 import zio._
 import zio.clock.Clock
