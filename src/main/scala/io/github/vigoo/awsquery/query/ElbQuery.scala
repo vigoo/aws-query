@@ -72,6 +72,7 @@ trait ElbQuery {
             instanceIds <- ZIO.foreach(instances)(_.instanceId)
           } yield ElbReport(
             key.name,
+            region = "us-east-1", // TODO: get from context
             tags.toMap,
             availabilityZones,
             listeners,

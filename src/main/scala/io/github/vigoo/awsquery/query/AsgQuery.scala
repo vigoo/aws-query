@@ -1,11 +1,12 @@
 package io.github.vigoo.awsquery.query
 
 import io.github.vigoo.awsquery.query.Common.AllServices
-import io.github.vigoo.awsquery.report.{AsgKey, AsgReport, EbEnvReport, ElbKey, ElbReport, EnvKey, LaunchConfigKey, LaunchConfigReport, LinkedReport}
+import io.github.vigoo.awsquery.report.{AsgKey, AsgReport, EbEnvKey, EbEnvReport, ElbKey, ElbReport, LaunchConfigKey, LaunchConfigReport, LinkedReport}
 import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.awsquery.sources.{asgquery, ebquery, elbquery, launchconfquery}
 import io.github.vigoo.zioaws.autoscaling.model.{AutoScalingGroup, LaunchConfiguration}
 import io.github.vigoo.zioaws.core.AwsError
+import zio.ZIO
 import zio.logging.Logging
 import zio.query.ZQuery
 
@@ -16,17 +17,39 @@ trait AsgQuery {
     (asgquery.getAutoScalingGroup(input).optional <&> asgquery.getAutoScalingGroupByLaunchConfiguration(input)).flatMap {
       case (a, b) =>
         val asg = a.orElse(b)
-         .map((asg: AutoScalingGroup.ReadOnly) => ZQuery.succeed(asg))
-         .getOrElse(ZQuery.fail(AwsError.fromThrowable(new IllegalArgumentException(s"Cannot find ASG by input $input"))))
+          .map((asg: AutoScalingGroup.ReadOnly) => ZQuery.succeed(asg))
+          .getOrElse(ZQuery.fail(AwsError.fromThrowable(new IllegalArgumentException(s"Cannot find ASG by input $input"))))
         asg >>= getAsgReport
     }
   }
 
   def getAsgReport(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[AsgKey, AsgReport]] =
     cached(asg)(_.autoScalingGroupName.map(AsgKey.apply)) { (key: AsgKey) =>
-      (getAsgElbs(asg) <&> getAsgEbEnv(asg) <&> getAsgLaunchConfig(asg)).map {
+      (getAsgElbs(asg) <&> getAsgEbEnv(asg) <&> getAsgLaunchConfig(asg)).flatMap {
         case ((elbs, ebEnvReport), launchConfigReport) =>
-          AsgReport(elbs, ebEnvReport, launchConfigReport)
+          ZQuery.fromEffect {
+            for {
+              tagList <- asg.tags
+              tags <- ZIO.foreach(tagList) { tag =>
+                for {
+                  key <- tag.key
+                  value <- tag.value
+                } yield key -> value
+              }
+            } yield AsgReport(
+              key.id,
+              region = "us-east-1", // TODO: get from context
+              asg.instancesValue.map(_.size).getOrElse(0),
+              asg.minSizeValue,
+              asg.maxSizeValue,
+              asg.desiredCapacityValue,
+              asg.createdTimeValue,
+              tags.toMap,
+              elbs,
+              ebEnvReport,
+              launchConfigReport
+            )
+          }
       }
     }
 
@@ -41,6 +64,7 @@ trait AsgQuery {
           securityGroups <- lc.securityGroups
         } yield LaunchConfigReport(
           key.name,
+          region = "us-east-1", // TODO: get from context
           createdAt,
           amiId,
           instanceProfileArn,
@@ -56,7 +80,7 @@ trait AsgQuery {
       result <- ZQuery.collectAllPar(elbNames.map(name => elbquery.getLoadBalancer(name) >>= getElbReport))
     } yield result
 
-  private def getAsgEbEnv(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, Option[LinkedReport[EnvKey, EbEnvReport]]] =
+  private def getAsgEbEnv(asg: AutoScalingGroup.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, Option[LinkedReport[EbEnvKey, EbEnvReport]]] =
     for {
       tagList <- ZQuery.fromEffect(asg.tags)
       ebEnvNameTag = tagList.find(_.keyValue.contains("elasticbeanstalk:environment-name"))

@@ -2,6 +2,7 @@ package io.github.vigoo.awsquery.report
 
 import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.zioaws.core.AwsError
+import io.github.vigoo.zioaws.elasticloadbalancing.model.Listener
 import zio._
 import zio.console.Console
 import zio.prelude._
@@ -15,8 +16,10 @@ package object render {
 
     trait Service {
       def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit]
-
       def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit]
+      def renderAsg(report: LinkedReport[AsgKey, AsgReport]): UIO[Unit]
+      def renderEbEnv(report: LinkedReport[EbEnvKey, EbEnvReport]): UIO[Unit]
+      def renderEbApp(report: LinkedReport[EbAppKey, EbAppReport]): UIO[Unit]
     }
 
   }
@@ -115,7 +118,7 @@ package object render {
     private def ifNotVisitedYet[K <: ReportKey, R <: Report](link: LinkedReport[K, R])(f: R => Print[Unit]): Print[Unit] =
       for {
         st <- lift(state.get)
-        report <-
+        _ <-
           if (st.alreadyVisited(link.key)) {
             unit
           } else {
@@ -133,9 +136,30 @@ package object render {
           }
       } yield ()
 
+    private def listenerList(value: List[Listener.ReadOnly]): Print[Unit] =
+      value.foreach_ { listener =>
+        keyword(listener.protocolValue) *> details(s"(${listener.loadBalancerPortValue})") <->
+          (listener.instanceProtocolValue match {
+            case None => unit
+            case Some(protocol) => normal("->") <-> keyword(protocol) *> details(s"(${listener.instancePortValue})")
+          }) <-> ifDefined(listener.sslCertificateIdValue) { id => details(s"with SSL certificate $id")}
+      }
+
     private def elb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): Print[Unit] =
       ifNotVisitedYet(report) { elb =>
-        sectionHeader("ELB") <-> highlighted(elb.name) <-> ifDefined(context)(details) *> newLine
+        sectionHeader("ELB") <-> highlighted(elb.name) <-> ifDefined(context)(details) \\
+          indented {
+            keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/v2/home?region=${elb.region}#LoadBalancers:search=${elb.name}") \\
+            keyword("Tags") <:> newLine *> indented(keyValueList(elb.tags)) *>
+            keyword("Listener") <:> listenerList(elb.listeners) \\
+            keyword(s"${elb.availabilityZones.size} availability zones") <:> details(elb.availabilityZones.mkString(" ")) \\
+            keyword(s"${elb.instancesIds.size} instances") <:> details(elb.instancesIds.mkString(" ")) \\
+            ifDefined(elb.ebEnv) { e =>
+              indented {
+                ebEnv(e)
+              } *> newLine
+            }
+          }
       }
 
     private def ec2(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): Print[Unit] =
@@ -143,22 +167,66 @@ package object render {
         sectionHeader("EC2/Instance") <-> highlighted(ec2.instanceId) <-> normal("is an EC2 instance in") <-> normal(List(Some(ec2.region), ec2.vpcId, ec2.subnetId).flatten.mkString(" / ")) \\
           indented {
             keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/v2/home?region=${ec2.region}#Instances:search=${ec2.instanceId}") \\
-              keyword("State") <:> highlighted(ec2.state.toString) \\
-              keyword("Tags") <:> newLine *> indented(keyValueList(ec2.tags)) *>
-              ifDefined(ec2.publicIp) { ip => keyword("Public IP") <:> normal(ip) <-> ifDefined(ec2.publicDns)(details) *> newLine } *>
-              ifDefined(ec2.privateIp) { ip => keyword("Private IP") <:> normal(ip) <-> ifDefined(ec2.privateDns)(details) *> newLine } *>
-              keyword("Instance type") <:> normal(ec2.instanceType.toString) \\
-              keyword("Security groups") <:> ec2.securityGroups.toList.foreach_ { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") *> space } \\
-              keyword("AMI") <:> normal(ec2.amiName) <-> details(s"(${ec2.amiId})") \\
-              keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(s"(${ec2.instanceProfileId})") \\
-              keyword("SSH key name") <:> normal(ec2.sshKeyName) \\
-              keyword("Launched at") <:> normal(ec2.launchedAt.toString) \\
-              ifDefined(ec2.elb) { e =>
-                indented {
-                  elb(e, Some(s"the instance ${ec2.instanceId} is registered into this ELB "))
-                } *> newLine
-              }
+            keyword("State") <:> highlighted(ec2.state.toString) \\
+            keyword("Tags") <:> newLine *> indented(keyValueList(ec2.tags)) *>
+            ifDefined(ec2.publicIp) { ip => keyword("Public IP") <:> normal(ip) <-> ifDefined(ec2.publicDns)(details) *> newLine } *>
+            ifDefined(ec2.privateIp) { ip => keyword("Private IP") <:> normal(ip) <-> ifDefined(ec2.privateDns)(details) *> newLine } *>
+            keyword("Instance type") <:> normal(ec2.instanceType.toString) \\
+            keyword("Security groups") <:> ec2.securityGroups.toList.foreach_ { case (sgName, sgId) => normal(sgName) <-> details(s"($sgId)") *> space } \\
+            keyword("AMI") <:> normal(ec2.amiName) <-> details(s"(${ec2.amiId})") \\
+            keyword("Instance profile") <:> normal(ec2.instanceProfileArn) <-> details(s"(${ec2.instanceProfileId})") \\
+            keyword("SSH key name") <:> normal(ec2.sshKeyName) \\
+            keyword("Launched at") <:> normal(ec2.launchedAt.toString) \\
+            ifDefined(ec2.elb) { e =>
+              indented {
+                elb(e, Some(s"the instance ${ec2.instanceId} is registered into this ELB "))
+              } *> newLine
+            }
           }
+      }
+
+    private def ebEnv(report: LinkedReport[EbEnvKey, EbEnvReport]): Print[Unit] =
+      ifNotVisitedYet(report) { env =>
+        sectionHeader("Beanstalk/Env") <-> highlighted(env.name) <-> details(env.id) <-> normal(s"is a Beanstalk environment of the application ${env.appName}") \\
+          indented {
+            keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/elasticbeanstalk/home?region=${env.region}#/environment/dashboard?applicationName=${env.appName}&environmentId=${env.id}") \\
+            keyword("Health") <:> highlighted(env.health.toString) \\
+            keyword("Currently running version") <:> normal(env.version) \\
+            normal(s"${env.asgs.size} ASGs, ${env.instanceCount} instances, ${env.elbs.size} ELBs") \\
+            env.elbs.foreach_(elb(_, None)) \\
+            env.asgs.foreach_(asg) \\
+            ebApp(env.app)
+          }
+      }
+
+    private def ebApp(report: LinkedReport[EbAppKey, EbAppReport]): Print[Unit] =
+      ifNotVisitedYet(report) { app =>
+        sectionHeader("Beanstalk/App") <-> normal("Application") <-> highlighted(app.name) \\
+        keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/elasticbeanstalk/home?region=${app.region}#/application/overview?applicationName=${app.name}") \\
+        normal(s"${app.numberOfVersions} versions") \\
+        app.ebEnvs.foreach_(ebEnv)
+      }
+
+    private def asg(report: LinkedReport[AsgKey, AsgReport]): Print[Unit] =
+      ifNotVisitedYet(report) { asg =>
+        sectionHeader("EC2/ASG") <-> normal("Auto Scaling group") <-> highlighted(asg.id) <-> normal(s"in ${asg.region}") \\
+        keyword("AWS Console") <:> link(s"https://console.aws.amazon.com/ec2/autoscaling/home?region=${asg.region}#AutoScalingGroups:id=${asg.id};filter=${asg.id};view=details") \\
+        keyword("Instances") <:> normal(s"current=${asg.instanceCount} min=${asg.minSize} max=${asg.maxSize} desired=${asg.desiredCapacity}")
+        keyword("Tags") <:> newLine *> indented(keyValueList(asg.tags)) *>
+        keyword("Created at") <:> normal(asg.createdAt.toString) \\
+        asg.loadBalancers.foreach_(elb(_, None)) \\
+        ifDefined(asg.ebEnv)(ebEnv) \\
+        launchConfig(asg.launchConfiguration)
+      }
+
+    private def launchConfig(report: LinkedReport[LaunchConfigKey, LaunchConfigReport]): Print[Unit] =
+      ifNotVisitedYet(report) { lc =>
+        sectionHeader("EC2/LaunchConfiguration") <-> highlighted(lc.name) <-> normal(s"in ${lc.region}") \\
+        keyword("Created at") <:> normal(lc.createdAt.toString) \\
+        keyword("AMI") <:> normal(lc.amiId) \\
+        ifDefined(lc.instanceProfileArn)(arn => keyword("IAM Instance Profile") <:> details(arn)) \\
+        keyword("Instance type") <:> normal(lc.instanceType) \\
+        keyword("Security groups") <:> details(lc.securityGroups.mkString(" "))
       }
 
     override def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit] =
@@ -166,6 +234,15 @@ package object render {
 
     override def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit] =
       run(ec2(report))
+
+    override def renderAsg(report: LinkedReport[AsgKey, AsgReport]): UIO[Unit] =
+      run(asg(report))
+
+    override def renderEbEnv(report: LinkedReport[EbEnvKey, EbEnvReport]): UIO[Unit] =
+      run(ebEnv(report))
+
+    override def renderEbApp(report: LinkedReport[EbAppKey, EbAppReport]): UIO[Unit] =
+      run(ebApp(report))
   }
 
   private case class State(alreadyVisited: Set[ReportKey])
@@ -183,5 +260,12 @@ package object render {
   def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): ZIO[Rendering, Nothing, Unit] =
     ZIO.accessM(_.get.renderElb(report, context))
 
-  def renderAsg(report: LinkedReport[AsgKey, AsgReport]): ZIO[Rendering, Nothing, Unit] = ???
+  def renderAsg(report: LinkedReport[AsgKey, AsgReport]): ZIO[Rendering, Nothing, Unit] =
+    ZIO.accessM(_.get.renderAsg(report))
+
+  def renderEbEnv(report: LinkedReport[EbEnvKey, EbEnvReport]): ZIO[Rendering, Nothing, Unit] =
+    ZIO.accessM(_.get.renderEbEnv(report))
+
+  def renderEbApp(report: LinkedReport[EbAppKey, EbAppReport]): ZIO[Rendering, Nothing, Unit] =
+    ZIO.accessM(_.get.renderEbApp(report))
 }

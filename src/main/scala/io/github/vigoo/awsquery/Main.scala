@@ -4,7 +4,7 @@ import io.github.vigoo.awsquery.query.Common.AllServices
 import io.github.vigoo.awsquery.query.Queries
 import io.github.vigoo.awsquery.report._
 import io.github.vigoo.awsquery.report.cache._
-import io.github.vigoo.awsquery.report.render.{Rendering, renderAsg, renderEc2Instance, renderElb}
+import io.github.vigoo.awsquery.report.render.{Rendering, renderAsg, renderEbApp, renderEbEnv, renderEc2Instance, renderElb}
 import io.github.vigoo.clipp
 import io.github.vigoo.clipp.ParserFailure
 import io.github.vigoo.clipp.syntax._
@@ -46,7 +46,7 @@ object Main extends App {
   private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[Console with Logging with ReportCache with AllServices, AwsError, LinkedReport[K, R]],
                                                        render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[Console with Logging with ReportCache with AllServices, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
     query
-      .foldCauseM(_ => ZQuery.none, ZQuery.some(_)) // don't care bout failures, we just want to report successful matches
+      .foldCauseM(_ => ZQuery.none, ZQuery.some(_)) // don't care about failures, we just want to report successful matches
       .map(_.map(render))
 
   private def runQuery(): ZIO[ClippConfig[Parameters] with Console with Logging with ReportCache with Rendering with AllServices, AwsError, Unit] = {
@@ -57,6 +57,8 @@ object Main extends App {
         List(
           renderQuery[Ec2InstanceKey, Ec2InstanceReport](Queries.getInstanceReport(input), renderEc2Instance),
           renderQuery[ElbKey, ElbReport](Queries.getElbReportByInput(input), renderElb(_, None)),
+          renderQuery[EbAppKey, EbAppReport](Queries.getEbAppReportByInput(input), renderEbApp),
+          renderQuery[EbEnvKey, EbEnvReport](Queries.getEbEnvReportByInput(input), renderEbEnv),
           renderQuery[AsgKey, AsgReport](Queries.getAsgReportByInput(input), renderAsg),
         )
 
