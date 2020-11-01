@@ -2,10 +2,12 @@ package io.github.vigoo.awsquery.query
 
 import java.net.URI
 
-import io.github.vigoo.awsquery.query.Common.AllServices
+import io.github.vigoo.awsquery.Main.Parameters
+import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
 import io.github.vigoo.awsquery.report.{ElbKey, ElbReport, LinkedReport}
 import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.awsquery.sources.{ebquery, elbquery}
+import io.github.vigoo.clipp.zioapi.config.parameters
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.elasticloadbalancing.model.LoadBalancerDescription
 import zio.ZIO
@@ -21,7 +23,7 @@ trait ElbQuery {
   private val cloudFormationStackRegex: Regex = """^awseb-(.*)-stack$""".r
   private val domainRegex: Regex = "^(dualstack\\.)?(.*)-[0-9]*\\.([-a-z0-9]*)\\.elb\\.amazonaws\\.com$".r("dualstack", "name", "region")
 
-  def getElbReportByInput(input: String): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] = {
+  def getElbReportByInput(input: String): ZQuery[QueryEnv, AwsError, LinkedReport[ElbKey, ElbReport]] = {
     Try(Option(URI.create(input).getAuthority).getOrElse(input)) match {
       case Failure(_) =>
         getElbReportByNameOrInstanceId(input)
@@ -35,7 +37,7 @@ trait ElbQuery {
     }
   }
 
-  private def getElbReportByNameOrInstanceId(input: String): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] =
+  private def getElbReportByNameOrInstanceId(input: String): ZQuery[QueryEnv, AwsError, LinkedReport[ElbKey, ElbReport]] =
     if (input.startsWith("i-")) {
       elbquery
         .loadBalancerOf(input)
@@ -45,7 +47,7 @@ trait ElbQuery {
       elbquery.getLoadBalancer(input) >>= getElbReport
     }
 
-  def getElbReport(elb: LoadBalancerDescription.ReadOnly): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[ElbKey, ElbReport]] =
+  def getElbReport(elb: LoadBalancerDescription.ReadOnly): ZQuery[QueryEnv, AwsError, LinkedReport[ElbKey, ElbReport]] =
     cached(elb)(_.loadBalancerName.map(ElbKey.apply)) { (key: ElbKey) =>
       for {
         tagList <- elbquery.getLoadBalancerTags(key.name)
@@ -70,9 +72,10 @@ trait ElbQuery {
             listeners <- ZIO.foreach(listenerDescriptions)(_.listener)
             instances <- elb.instances
             instanceIds <- ZIO.foreach(instances)(_.instanceId)
+            region <- parameters[Parameters].map(_.region)
           } yield ElbReport(
             key.name,
-            region = "us-east-1", // TODO: get from context
+            region,
             tags.toMap,
             availabilityZones,
             listeners,

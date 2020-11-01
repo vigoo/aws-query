@@ -1,6 +1,6 @@
 package io.github.vigoo.awsquery
 
-import io.github.vigoo.awsquery.query.Common.AllServices
+import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
 import io.github.vigoo.awsquery.query.Queries
 import io.github.vigoo.awsquery.report._
 import io.github.vigoo.awsquery.report.cache._
@@ -41,10 +41,11 @@ import zio.random.Random
 object Main extends App {
 
   case class Parameters(verbose: Boolean,
-                        searchInput: String)
+                        searchInput: String,
+                        region: String)
 
-  private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[Console with Logging with ReportCache with AllServices, AwsError, LinkedReport[K, R]],
-                                                       render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[Console with Logging with ReportCache with AllServices, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
+  private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[QueryEnv, AwsError, LinkedReport[K, R]],
+                                                       render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[QueryEnv, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
     query
       .foldCauseM(_ => ZQuery.none, ZQuery.some(_)) // don't care about failures, we just want to report successful matches
       .map(_.map(render))
@@ -93,48 +94,50 @@ object Main extends App {
 
   private def awsQuery(): ZIO[Random with Clock with Console with Logging with ClippConfig[Parameters], Nothing, ExitCode] =
     throttlingPolicy.use { policy =>
-      val throttling = new AwsCallAspect[Any] {
-        override def apply[R1, A](f: ZIO[R1, AwsError, aspects.Described[A]]): ZIO[R1, AwsError, aspects.Described[A]] =
-          policy(f).mapError {
-            case Policy.WrappedError(e) => e
-            case Policy.BulkheadRejection => AwsError.fromThrowable(new RuntimeException(s"Bulkhead rejection"))
-            case Policy.CircuitBreakerOpen => AwsError.fromThrowable(new RuntimeException(s"AWS rate limit exceeded"))
-          }
-      }
-
-      val callLogging: AwsCallAspect[Logging] =
-        new AwsCallAspect[Logging] {
-          override final def apply[R1 <: Logging, A](f: ZIO[R1, AwsError, Described[A]]): ZIO[R1, AwsError, Described[A]] =
-            f.flatMap { case r @ Described(_, description) =>
-              log.info(s"[${description.service}/${description.operation}]").as(r)
+      parameters[Parameters].flatMap { params =>
+        val throttling = new AwsCallAspect[Any] {
+          override def apply[R1, A](f: ZIO[R1, AwsError, aspects.Described[A]]): ZIO[R1, AwsError, aspects.Described[A]] =
+            policy(f).mapError {
+              case Policy.WrappedError(e) => e
+              case Policy.BulkheadRejection => AwsError.fromThrowable(new RuntimeException(s"Bulkhead rejection"))
+              case Policy.CircuitBreakerOpen => AwsError.fromThrowable(new RuntimeException(s"AWS rate limit exceeded"))
             }
         }
 
-      val commonConfig = ZLayer.succeed(CommonAwsConfig(
-        region = Some(Region.US_EAST_1),
-        credentialsProvider = DefaultCredentialsProvider.create(),
-        endpointOverride = None,
-        commonClientConfig = None
-      ))
+        val callLogging: AwsCallAspect[Logging] =
+          new AwsCallAspect[Logging] {
+            override final def apply[R1 <: Logging, A](f: ZIO[R1, AwsError, Described[A]]): ZIO[R1, AwsError, Described[A]] =
+              f.flatMap { case r@Described(_, description) =>
+                log.info(s"[${description.service}/${description.operation}]").as(r)
+              }
+          }
 
-      val awsCore = (netty.default ++ commonConfig) >>> core.config.configured()
+        val commonConfig = ZLayer.succeed(CommonAwsConfig(
+          region = Some(Region.of(params.region)),
+          credentialsProvider = DefaultCredentialsProvider.create(),
+          endpointOverride = None,
+          commonClientConfig = None
+        ))
 
-      val awsClients =
+        val awsCore = (netty.default ++ commonConfig) >>> core.config.configured()
+
+        val awsClients =
           ec2.live @@ (throttling >>> callLogging) ++
-          elasticloadbalancing.live @@ (throttling >>> callLogging) ++
-          elasticbeanstalk.live @@ (throttling >>> callLogging) ++
-          autoscaling.live @@ (throttling >>> callLogging)
+            elasticloadbalancing.live @@ (throttling >>> callLogging) ++
+            elasticbeanstalk.live @@ (throttling >>> callLogging) ++
+            autoscaling.live @@ (throttling >>> callLogging)
 
-      val finalLayer =
-        ((ZLayer.service[Logger[String]] ++ awsCore) >>> awsClients) ++
-          ((Console.any ++ cache.live) >+> render.live)
+        val finalLayer =
+          ((ZLayer.service[Logger[String]] ++ awsCore) >>> awsClients) ++
+            ((Console.any ++ cache.live) >+> render.live)
 
-      runQuery()
-        .provideSomeLayer[Clock with Console with Logging with ClippConfig[Parameters]](finalLayer)
-        .tapError { error =>
-          console.putStrLnErr(error.toString)
-        }
-        .exitCode
+        runQuery()
+          .provideSomeLayer[Clock with Console with Logging with ClippConfig[Parameters]](finalLayer)
+          .tapError { error =>
+            console.putStrLnErr(error.toString)
+          }
+          .exitCode
+      }
     }
 
   override def run(args: List[String]): URIO[zio.ZEnv, ExitCode] = {
@@ -142,7 +145,10 @@ object Main extends App {
       _ <- metadata("aws-query", "search for AWS infrastructure resources")
       verbose <- flag("Verbose logging", 'v', "verbose")
       searchInput <- parameter[String]("Search input", "NAME_OR_ID")
-    } yield Parameters(verbose, searchInput)
+      region <- optional {
+        namedParameter[String]("AWS region", "REGION", "region")
+      }
+    } yield Parameters(verbose, searchInput, region.getOrElse("us-east-1"))
 
     val params = clipp.zioapi.config.fromArgsWithUsageInfo(args, paramSpec)
     val logging = log4j2Configuration >>> Slf4jLogger.make { (_, message) => message }

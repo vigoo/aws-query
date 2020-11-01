@@ -1,9 +1,11 @@
 package io.github.vigoo.awsquery.query
 
-import io.github.vigoo.awsquery.query.Common.AllServices
+import io.github.vigoo.awsquery.Main.Parameters
+import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
 import io.github.vigoo.awsquery.report.{Ec2InstanceKey, Ec2InstanceReport, LinkedReport}
 import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.awsquery.sources.{ec2query, elbquery}
+import io.github.vigoo.clipp.zioapi.config.parameters
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.ec2
 import zio.ZIO
@@ -13,7 +15,7 @@ import zio.query.ZQuery
 trait Ec2Query {
   this: Common with ElbQuery =>
 
-  def getInstanceReport(instanceId: ec2.model.primitives.InstanceId): ZQuery[Logging with ReportCache with AllServices, AwsError, LinkedReport[Ec2InstanceKey, Ec2InstanceReport]] =
+  def getInstanceReport(instanceId: ec2.model.primitives.InstanceId): ZQuery[QueryEnv, AwsError, LinkedReport[Ec2InstanceKey, Ec2InstanceReport]] =
     cached(instanceId)((id: ec2.model.primitives.InstanceId) => ZIO.succeed(Ec2InstanceKey(id))) { _ =>
       for {
         instance <- ec2query.getEc2Instance(instanceId)
@@ -48,9 +50,10 @@ trait Ec2Query {
             instanceProfileId <- instanceProfile.id
             sshKeyName <- instance.keyName
             launchedAt <- instance.launchTime
+            region <- parameters[Parameters].map(_.region)
           } yield Ec2InstanceReport(
             instanceId,
-            region = "us-east-1", // TODO: get from context
+            region,
             instance.vpcIdValue,
             instance.subnetIdValue,
             stateName,

@@ -1,7 +1,9 @@
 package io.github.vigoo.awsquery.query
 
+import io.github.vigoo.awsquery.Main.Parameters
 import io.github.vigoo.awsquery.report.{LinkedReport, Report, ReportKey}
 import io.github.vigoo.awsquery.report.cache.{ReportCache, storeIfNew}
+import io.github.vigoo.clipp.zioapi.config.ClippConfig
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.{autoscaling, ec2, elasticbeanstalk, elasticloadbalancing}
 import zio.ZIO
@@ -30,4 +32,5 @@ trait Common {
 
 object Common {
   type AllServices = ec2.Ec2 with elasticloadbalancing.ElasticLoadBalancing with elasticbeanstalk.ElasticBeanstalk with autoscaling.AutoScaling
+  type QueryEnv = ClippConfig[Parameters] with Logging with ReportCache with AllServices
 }
