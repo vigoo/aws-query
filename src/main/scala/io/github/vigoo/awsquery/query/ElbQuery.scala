@@ -3,19 +3,17 @@ package io.github.vigoo.awsquery.query
 import java.net.URI
 
 import io.github.vigoo.awsquery.Main.Parameters
-import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
+import io.github.vigoo.awsquery.query.Common.QueryEnv
 import io.github.vigoo.awsquery.report.{ElbKey, ElbReport, LinkedReport}
-import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.awsquery.sources.{ebquery, elbquery}
 import io.github.vigoo.clipp.zioapi.config.parameters
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.elasticloadbalancing.model.LoadBalancerDescription
 import zio.ZIO
-import zio.logging.Logging
 import zio.query.ZQuery
 
-import scala.util.{Failure, Success, Try}
 import scala.util.matching.Regex
+import scala.util.{Failure, Success, Try}
 
 trait ElbQuery {
   this: Common with EbQuery =>

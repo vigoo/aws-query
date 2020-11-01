@@ -9,13 +9,10 @@ package object cache {
   type ReportCache = Has[ReportCache.Service]
 
   object ReportCache {
-
     trait Service {
       def storeIfNew[A <: Report](reportKey: ReportKey, query: ZQuery[Any, AwsError, A]): ZQuery[Any, AwsError, Boolean]
-
       def retrieve[A <: Report](key: ReportKey): ZIO[Any, AwsError, Option[A]]
     }
-
   }
 
   val live: ZLayer[Any, Nothing, ReportCache] = {

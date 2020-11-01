@@ -1,15 +1,13 @@
 package io.github.vigoo.awsquery.query
 
 import io.github.vigoo.awsquery.Main.Parameters
-import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
-import io.github.vigoo.awsquery.report.{AsgKey, AsgReport, EbEnvKey, EbEnvReport, ElbKey, ElbReport, LaunchConfigKey, LaunchConfigReport, LinkedReport}
-import io.github.vigoo.awsquery.report.cache.ReportCache
+import io.github.vigoo.awsquery.query.Common.QueryEnv
+import io.github.vigoo.awsquery.report._
 import io.github.vigoo.awsquery.sources.{asgquery, ebquery, elbquery, launchconfquery}
-import io.github.vigoo.clipp.zioapi.config.{ClippConfig, parameters}
+import io.github.vigoo.clipp.zioapi.config.parameters
 import io.github.vigoo.zioaws.autoscaling.model.{AutoScalingGroup, LaunchConfiguration}
 import io.github.vigoo.zioaws.core.AwsError
 import zio.ZIO
-import zio.logging.Logging
 import zio.query.ZQuery
 
 trait AsgQuery {

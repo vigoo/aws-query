@@ -1,16 +1,15 @@
 package io.github.vigoo.awsquery.query
 
 import io.github.vigoo.awsquery.Main.Parameters
-import io.github.vigoo.awsquery.report.{LinkedReport, Report, ReportKey}
 import io.github.vigoo.awsquery.report.cache.{ReportCache, storeIfNew}
+import io.github.vigoo.awsquery.report.{LinkedReport, Report, ReportKey}
 import io.github.vigoo.clipp.zioapi.config.ClippConfig
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.{autoscaling, ec2, elasticbeanstalk, elasticloadbalancing}
 import zio.ZIO
-import zio.ZIO.CanFilter
 import zio.logging.Logging
-import zio.query.ZQuery
 import zio.query.Described._
+import zio.query.ZQuery
 
 trait Common {
   protected def optionally[R, E, A, B](value: Option[A])(f: A => ZQuery[R, E, B]): ZQuery[R, E, Option[B]] =

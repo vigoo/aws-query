@@ -34,16 +34,22 @@ import zio.random.Random
 
 object Main extends App {
 
-  case class Parameters(verbose: Boolean,
-                        searchInput: String,
-                        region: String)
+  final case class Parameters(verbose: Boolean,
+                              searchInput: String,
+                              region: String)
 
+  /**
+   * Runs a query and renders its result if succeded, ignore failures
+   */
   private def renderQuery[K <: ReportKey, R <: Report](query: ZQuery[QueryEnv, AwsError, LinkedReport[K, R]],
                                                        render: LinkedReport[K, R] => ZIO[Rendering, Nothing, Unit]): ZQuery[QueryEnv, AwsError, Option[ZIO[Rendering, Nothing, Unit]]] =
     query
       .foldCauseM(_ => ZQuery.none, ZQuery.some(_)) // don't care about failures, we just want to report successful matches
       .map(_.map(render))
 
+  /**
+   * Tries all existing queries on the provided user input and prints gathered reports to the console
+   */
   private def runQuery(): ZIO[ClippConfig[Parameters] with Console with Logging with ReportCache with Rendering with AllServices, AwsError, Unit] = {
     parameters[Parameters].flatMap { params =>
       val input = params.searchInput
@@ -64,6 +70,9 @@ object Main extends App {
     }
   }
 
+  /**
+   * Throttling policy for AWS calls
+   */
   private def throttlingPolicy: ZManaged[Random with Clock with Logging, Nothing, Policy[AwsError]] =
     for {
       logging <- ZManaged.environment[Logging]
@@ -89,6 +98,7 @@ object Main extends App {
   private def awsQuery(): ZIO[Random with Clock with Console with Logging with ClippConfig[Parameters], Nothing, ExitCode] =
     throttlingPolicy.use { policy =>
       parameters[Parameters].flatMap { params =>
+        // Defning zio-aws aspects
         val throttling = new AwsCallAspect[Any] {
           override def apply[R1, A](f: ZIO[R1, AwsError, aspects.Described[A]]): ZIO[R1, AwsError, aspects.Described[A]] =
             policy(f).mapError {
@@ -106,6 +116,7 @@ object Main extends App {
               }
           }
 
+        // Setting up the layers
         val commonConfig = ZLayer.succeed(CommonAwsConfig(
           region = Some(Region.of(params.region)),
           credentialsProvider = DefaultCredentialsProvider.create(),
@@ -156,6 +167,7 @@ object Main extends App {
   }
 
   case class Log4jConfiguration()
+
   private def log4j2Configuration: ZLayer[Has[ClippConfig.Service[Parameters]], Throwable, Has[Log4jConfiguration]] = {
     ZLayer.fromServiceM[ClippConfig.Service[Parameters], Any, Throwable, Log4jConfiguration] { params =>
       ZIO.effect {

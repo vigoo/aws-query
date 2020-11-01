@@ -8,17 +8,11 @@ package object report {
 
 
   sealed trait ReportKey
-
   final case class Ec2InstanceKey(instanceId: ec2.model.primitives.InstanceId) extends ReportKey
-
   final case class ElbKey(name: elasticloadbalancing.model.primitives.AccessPointName) extends ReportKey
-
   final case class EbEnvKey(id: elasticbeanstalk.model.primitives.EnvironmentId) extends ReportKey
-
   final case class EbAppKey(name: elasticbeanstalk.model.primitives.ApplicationName) extends ReportKey
-
   final case class AsgKey(id: autoscaling.model.primitives.ResourceName) extends ReportKey
-
   final case class LaunchConfigKey(name: autoscaling.model.primitives.ResourceName) extends ReportKey
 
 

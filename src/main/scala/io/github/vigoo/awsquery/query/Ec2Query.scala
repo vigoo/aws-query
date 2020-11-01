@@ -1,15 +1,13 @@
 package io.github.vigoo.awsquery.query
 
 import io.github.vigoo.awsquery.Main.Parameters
-import io.github.vigoo.awsquery.query.Common.{AllServices, QueryEnv}
+import io.github.vigoo.awsquery.query.Common.QueryEnv
 import io.github.vigoo.awsquery.report.{Ec2InstanceKey, Ec2InstanceReport, LinkedReport}
-import io.github.vigoo.awsquery.report.cache.ReportCache
 import io.github.vigoo.awsquery.sources.{ec2query, elbquery}
 import io.github.vigoo.clipp.zioapi.config.parameters
 import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.ec2
 import zio.ZIO
-import zio.logging.Logging
 import zio.query.ZQuery
 
 trait Ec2Query {

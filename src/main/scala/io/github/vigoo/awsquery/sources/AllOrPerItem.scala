@@ -10,20 +10,44 @@ import zio.{Chunk, ZIO}
 import scala.reflect.ClassTag
 
 trait AllOrPerItem[R, Req, Item] {
+  /**
+   * Data source name
+   */
   val name: String
 
+  /**
+   * Identifies the 'get all' request
+   */
   def isGetAll(request: Req): Boolean
 
+  /**
+   * Identifies the 'get one' request
+   */
   def isPerItem(request: Req): Boolean
 
+  /**
+   * Constructs a 'get all' request
+   */
   val allReq: Req
 
+  /**
+   * Constructs a 'get one' request for a given item
+   */
   def itemToReq(item: Item): ZIO[R, AwsError, Req]
 
+  /**
+   * Performs 'get all'
+   */
   def getAll(): ZStream[R, AwsError, Item]
 
+  /**
+   * Performs 'get some'
+   */
   def getSome(reqs: Set[Req]): ZStream[R, AwsError, Item]
 
+  /**
+   * Hook to process additional requests not 'get all' or 'get one'
+   */
   def processAdditionalRequests(requests: Chunk[Req], partialResult: CompletedRequestMap): ZIO[R, Nothing, CompletedRequestMap] =
     ZIO.succeed(partialResult)
 }

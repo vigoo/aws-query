@@ -1,7 +1,6 @@
 package io.github.vigoo.awsquery.report
 
 import io.github.vigoo.awsquery.report.cache.ReportCache
-import io.github.vigoo.zioaws.core.AwsError
 import io.github.vigoo.zioaws.elasticloadbalancing.model.Listener
 import zio._
 import zio.console.Console
@@ -13,7 +12,6 @@ package object render {
   type Rendering = Has[Rendering.Service]
 
   object Rendering {
-
     trait Service {
       def renderEc2Instance(report: LinkedReport[Ec2InstanceKey, Ec2InstanceReport]): UIO[Unit]
       def renderElb(report: LinkedReport[ElbKey, ElbReport], context: Option[String]): UIO[Unit]
@@ -21,29 +19,28 @@ package object render {
       def renderEbEnv(report: LinkedReport[EbEnvKey, EbEnvReport]): UIO[Unit]
       def renderEbApp(report: LinkedReport[EbAppKey, EbAppReport]): UIO[Unit]
     }
-
   }
 
   sealed trait Print[+A]
-  case class Pure[A](a: A) extends Print[A]
-  case class PrintS(s: String) extends Print[Unit]
-  case class PrintModified(s: String, modifiers: String) extends Print[Unit]
-  case object PrintNL extends Print[Unit]
-  case class PrintIndented[A](p: Print[A]) extends Print[A]
-  case class PrintFlatMap[A, B](a: Print[A], f: A => Print[B]) extends Print[B]
-  case class PrintEffect[A](f: UIO[A]) extends Print[A]
+  final case class PrintPure[A](a: A) extends Print[A]
+  final case class PrintS(s: String) extends Print[Unit]
+  final case class PrintModified(s: String, modifiers: String) extends Print[Unit]
+  final case object PrintNL extends Print[Unit]
+  final case class PrintIndented[A](p: Print[A]) extends Print[A]
+  final case class PrintFlatMap[A, B](a: Print[A], f: A => Print[B]) extends Print[B]
+  final case class PrintEffect[A](f: UIO[A]) extends Print[A]
 
 
   object Print {
     implicit val print = new Covariant[Print] with IdentityFlatten[Print] with IdentityBoth[Print] {
-      override def map[A, B](f: A => B): Print[A] => Print[B] = fa => PrintFlatMap(fa, (a: A) => Pure(f(a)))
+      override def map[A, B](f: A => B): Print[A] => Print[B] = fa => PrintFlatMap(fa, (a: A) => PrintPure(f(a)))
 
-      override def any: Print[Any] = Pure(())
+      override def any: Print[Any] = PrintPure(())
       override def flatten[A](ffa: Print[Print[A]]): Print[A] = PrintFlatMap(ffa, (fa: Print[A]) => fa)
       override def both[A, B](fa: => Print[A], fb: => Print[B]): Print[(A, B)] = PrintFlatMap(fa, (a: A) => map((b: B) => (a, b))(fb))
     }
 
-    val unit: Print[Unit] = Pure(())
+    val unit: Print[Unit] = PrintPure(())
     val space: Print[Unit] = PrintS(" ")
     val newLine: Print[Unit] = PrintNL
 
@@ -91,7 +88,7 @@ package object render {
 
     private def runImpl[A](p: Print[A], state: PrettyState): UIO[(A, PrettyState)] =
       p match {
-        case Pure(a) => ZIO.succeed((a, state))
+        case PrintPure(a) => ZIO.succeed((a, state))
         case PrintS(s) => ZIO.when(state.afterNL)(console.putStr(state.indentation)) *> console.putStr(s).as(((), state.copy(afterNL = false)))
         case PrintModified(s, modifiers) => ZIO.when(state.afterNL)(console.putStr(state.indentation)) *> console.putStr(s"${modifiers}$s$RESET").as(((), state.copy(afterNL = false)))
         case PrintNL => if (state.afterNL) ZIO.succeed(((), state)) else console.putStrLn("").as(((), state.copy(afterNL = true)))
