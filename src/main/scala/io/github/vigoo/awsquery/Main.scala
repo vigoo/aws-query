@@ -145,18 +145,19 @@ object Main extends App {
     } yield Parameters(verbose, searchInput, region.getOrElse("us-east-1"))
 
     val params = clipp.zioapi.config.fromArgsWithUsageInfo(args, paramSpec)
-    val logging = log4j2Configuration >>> Slf4jLogger.make { (_, message) => message }
+    val logging = log4j2Configuration >+> Slf4jLogger.make { (_, message) => message }
 
     for {
       result <- awsQuery()
         .provideCustomLayer(params >+> logging)
-        .catchAll { failure: ParserFailure => ZIO.succeed(ExitCode.failure) }
+        .catchAll { _ => ZIO.succeed(ExitCode.failure) }
       _ <- ZIO.effect(LogManager.shutdown()).orDie
     } yield result
   }
 
-  private def log4j2Configuration = {
-    ZLayer.fromService[ClippConfig.Service[Parameters], Unit] { params =>
+  case class Log4jConfiguration()
+  private def log4j2Configuration: ZLayer[Has[ClippConfig.Service[Parameters]], Throwable, Has[Log4jConfiguration]] = {
+    ZLayer.fromServiceM[ClippConfig.Service[Parameters], Any, Throwable, Log4jConfiguration] { params =>
       ZIO.effect {
         val builder = ConfigurationBuilderFactory.newConfigurationBuilder()
 
@@ -175,7 +176,9 @@ object Main extends App {
         val rootLogger = builder.newRootLogger(level)
         rootLogger.add(builder.newAppenderRef("CONSOLE"))
         builder.add(rootLogger)
+
         Configurator.initialize(builder.build())
+        Log4jConfiguration()
       }
     }
   }
