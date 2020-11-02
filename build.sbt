@@ -20,7 +20,7 @@ libraryDependencies ++= Seq(
 
   "io.github.vigoo" %% "zio-aws-netty" % zioAwsVersion,
 
-  "nl.vroste" %% "rezilience" % "0.5.0",
+  "nl.vroste" %% "rezilience" % "0.5.1",
 
   "io.github.vigoo" %% "clipp-zio" % "0.4.0",
 
